@@ -93,7 +93,7 @@ func (s *Server) GetAdminCreatePeer(c *gin.Context) {
 		s.GetHandleError(c, http.StatusInternalServerError, "Session error", err.Error())
 		return
 	}
-	c.HTML(http.StatusOK, "admin_edit_client.html", gin.H{
+	c.HTML(http.StatusOK, "admin_create_client.html", gin.H{
 		"Route":        c.Request.URL.Path,
 		"Alerts":       GetFlashes(c),
 		"Session":      currentSession,
