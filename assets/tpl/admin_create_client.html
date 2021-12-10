@@ -29,7 +29,15 @@
             <input type="hidden" name="devicetype" value="{{.Device.Type}}">
             <input type="hidden" name="device" value="{{.Device.DeviceName}}">
             <input type="hidden" name="endpoint" value="{{.Peer.Endpoint}}">
-                <div class="form-row">
+            <input type="hidden" name="privkey">
+            <input type="hidden" name="presharedkey">
+            <input type="hidden" name="ip">
+            <input type="hidden" name="allowedip">
+            <input type="hidden" name="allowedipSrv">
+            <input type="hidden" name="dns">
+            <input type="hidden" name="keepalive">
+            <input type="hidden" name="mtu">
+            <div class="form-row">
                     <div class="form-group required col-md-12">
                         <label for="server_PublicKey">Public Key</label>
                         <input type="text" name="pubkey" class="form-control" id="server_PublicKey" value="{{.Peer.PublicKey}}" required>
@@ -47,7 +55,7 @@
                     <input type="email" name="mail" class="form-control" id="server_Email" value="{{.Peer.Email}}" required>
                 </div>
             </div>
-            
+
             <button type="submit" class="btn btn-primary">Save</button>
             <a href="/admin" class="btn btn-secondary">Cancel</a>
         </form>
