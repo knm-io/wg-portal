@@ -71,8 +71,18 @@ func (s *Server) PostAdminEditPeer(c *gin.Context) {
 	now := time.Now()
 	if disabled && currentPeer.DeactivatedAt == nil {
 		formPeer.DeactivatedAt = &now
+		formPeer.DeactivatedReason = wireguard.DeactivatedReasonAdminEdit
 	} else if !disabled {
 		formPeer.DeactivatedAt = nil
+		formPeer.DeactivatedReason = ""
+		// If a peer was deactivated due to expiry, remove the expires-at date to avoid
+		// unwanted re-expiry.
+		if currentPeer.DeactivatedReason == wireguard.DeactivatedReasonExpired {
+			formPeer.ExpiresAt = nil
+		}
+	}
+	if formPeer.ExpiresAt != nil && formPeer.ExpiresAt.IsZero() { // convert 01-01-0001 to nil
+		formPeer.ExpiresAt = nil
 	}
 
 	// Update in database
@@ -129,6 +139,7 @@ func (s *Server) PostAdminCreatePeer(c *gin.Context) {
 	now := time.Now()
 	if disabled {
 		formPeer.DeactivatedAt = &now
+		formPeer.DeactivatedReason = wireguard.DeactivatedReasonAdminCreate
 	}
 
 	if err := s.CreatePeer(currentSession.DeviceName, formPeer); err != nil {
@@ -189,7 +200,7 @@ func (s *Server) PostAdminCreateLdapPeers(c *gin.Context) {
 	logrus.Infof("creating %d ldap peers", len(emails))
 
 	for i := range emails {
-		if err := s.CreatePeerByEmail(currentSession.DeviceName, emails[i], formData.Identifier, false); err != nil {
+		if err := s.CreatePeerByEmail(currentSession.DeviceName, emails[i], formData.Identifier); err != nil {
 			_ = s.updateFormInSession(c, formData)
 			SetFlashMessage(c, "failed to add user: "+err.Error(), "danger")
 			c.Redirect(http.StatusSeeOther, "/admin/peer/createldap?formerr=create")
@@ -420,11 +431,10 @@ func (s *Server) PostUserCreatePeer(c *gin.Context) {
 		formPeer = currentSession.FormData.(wireguard.Peer)
 	}
 
-	formPeer.Email = currentSession.Email;
-	formPeer.Identifier = currentSession.Email;
-	formPeer.DeviceType = wireguard.DeviceTypeServer;
-  formPeer.PrivateKey = "";
-	
+	formPeer.Email = currentSession.Email
+	formPeer.Identifier = currentSession.Email
+	formPeer.DeviceType = wireguard.DeviceTypeServer
+
 	if err := c.ShouldBind(&formPeer); err != nil {
 		_ = s.updateFormInSession(c, formPeer)
 		SetFlashMessage(c, "failed to bind form data: "+err.Error(), "danger")
@@ -432,10 +442,16 @@ func (s *Server) PostUserCreatePeer(c *gin.Context) {
 		return
 	}
 
+	// if public key was manually set, remove the incorrect private key
+	if formPeer.PublicKey != currentSession.FormData.(wireguard.Peer).PublicKey {
+		formPeer.PrivateKey = ""
+	}
+
 	disabled := c.PostForm("isdisabled") != ""
 	now := time.Now()
 	if disabled {
 		formPeer.DeactivatedAt = &now
+		formPeer.DeactivatedReason = wireguard.DeactivatedReasonUserCreate
 	}
 
 	if err := s.CreatePeer(currentSession.DeviceName, formPeer); err != nil {
@@ -452,7 +468,6 @@ func (s *Server) PostUserCreatePeer(c *gin.Context) {
 func (s *Server) GetUserEditPeer(c *gin.Context) {
 	peer := s.peers.GetPeerByKey(c.Query("pkey"))
 
-	
 	currentSession, err := s.setFormInSession(c, peer)
 	if err != nil {
 		s.GetHandleError(c, http.StatusInternalServerError, "Session error", err.Error())
@@ -461,7 +476,7 @@ func (s *Server) GetUserEditPeer(c *gin.Context) {
 
 	if peer.Email != currentSession.Email {
 		s.GetHandleError(c, http.StatusUnauthorized, "No permissions", "You don't have permissions to view this resource!")
-		return;
+		return
 	}
 
 	c.HTML(http.StatusOK, "user_edit_client.html", gin.H{
@@ -486,15 +501,16 @@ func (s *Server) PostUserEditPeer(c *gin.Context) {
 
 	if currentPeer.Email != currentSession.Email {
 		s.GetHandleError(c, http.StatusUnauthorized, "No permissions", "You don't have permissions to view this resource!")
-		return;
+		return
 	}
 
 	disabled := c.PostForm("isdisabled") != ""
 	now := time.Now()
 	if disabled && currentPeer.DeactivatedAt == nil {
 		currentPeer.DeactivatedAt = &now
+		currentPeer.DeactivatedReason = wireguard.DeactivatedReasonUserEdit
 	}
-	
+
 	// Update in database
 	if err := s.UpdatePeer(currentPeer, now); err != nil {
 		_ = s.updateFormInSession(c, currentPeer)

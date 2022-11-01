@@ -23,9 +23,19 @@ import (
 	"gorm.io/gorm"
 )
 
-//
+const (
+	DeactivatedReasonExpired     = "expired"
+	DeactivatedReasonUserEdit    = "user edit action"
+	DeactivatedReasonUserCreate  = "user create action"
+	DeactivatedReasonAdminEdit   = "admin edit action"
+	DeactivatedReasonAdminCreate = "admin create action"
+	DeactivatedReasonApiEdit     = "api edit action"
+	DeactivatedReasonApiCreate   = "api create action"
+	DeactivatedReasonLdapMissing = "missing in ldap"
+	DeactivatedReasonUserMissing = "missing user"
+)
+
 // CUSTOM VALIDATORS ----------------------------------------------------------------------------
-//
 var cidrList validator.Func = func(fl validator.FieldLevel) bool {
 	cidrListStr := fl.Field().String()
 
@@ -34,6 +44,22 @@ var cidrList validator.Func = func(fl validator.FieldLevel) bool {
 		_, _, err := net.ParseCIDR(cidrList[i])
 		if err != nil {
 			return false
+		}
+	}
+	return true
+}
+
+var dnsList validator.Func = func(fl validator.FieldLevel) bool {
+	dnsListStr := fl.Field().String()
+	dnsList := common.ParseStringList(dnsListStr)
+	validate := binding.Validator.Engine().(*validator.Validate)
+	for i := range dnsList {
+		ip := net.ParseIP(dnsList[i])
+		if ip == nil {
+			err := validate.Var(dnsList[i], "fqdn")
+			if err != nil {
+				return false
+			}
 		}
 	}
 	return true
@@ -55,6 +81,7 @@ func init() {
 	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
 		_ = v.RegisterValidation("cidrlist", cidrList)
 		_ = v.RegisterValidation("iplist", ipList)
+		_ = v.RegisterValidation("dnsList", dnsList)
 	}
 }
 
@@ -89,15 +116,19 @@ type Peer struct {
 	// Misc. WireGuard Settings
 	PrivateKey string `form:"privkey" binding:"omitempty,base64"`
 	IPsStr     string `form:"ip" binding:"cidrlist,required_if=DeviceType server"` // a comma separated list of IPs of the client
-	DNSStr     string `form:"dns" binding:"iplist"`                                // comma separated list of the DNS servers for the client
+	DNSStr     string `form:"dns" binding:"dnsList"`                               // comma separated list of the DNS servers for the client
 	// Global Device Settings (can be ignored, only make sense if device is in server mode)
 	Mtu int `form:"mtu" binding:"gte=0,lte=1500"`
 
-	DeactivatedAt *time.Time `json:",omitempty"`
-	CreatedBy     string
-	UpdatedBy     string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	DeactivatedAt     *time.Time `json:",omitempty"`
+	DeactivatedReason string     `json:",omitempty"`
+
+	ExpiresAt *time.Time `json:",omitempty" form:"expires_at" binding:"omitempty" time_format:"2006-01-02"`
+
+	CreatedBy string
+	UpdatedBy string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 func (p *Peer) SetIPAddresses(addresses ...string) {
@@ -223,6 +254,33 @@ func (p Peer) IsValid() bool {
 	return true
 }
 
+func (p Peer) WillExpire() bool {
+	if p.ExpiresAt == nil {
+		return false
+	}
+	if p.DeactivatedAt != nil {
+		return false // already deactivated...
+	}
+	if p.ExpiresAt.After(time.Now()) {
+		return true
+	}
+	return false
+}
+
+func (p Peer) IsExpired() bool {
+	if p.ExpiresAt == nil {
+		return false
+	}
+	if p.ExpiresAt.Before(time.Now()) {
+		return true
+	}
+	return false
+}
+
+func (p Peer) IsDeactivated() bool {
+	return p.DeactivatedAt != nil
+}
+
 func (p Peer) GetConfigFileName() string {
 	reg := regexp.MustCompile("[^a-zA-Z0-9_-]+")
 	return reg.ReplaceAllString(strings.ReplaceAll(p.Identifier, " ", "-"), "") + ".conf"
@@ -255,7 +313,7 @@ type Device struct {
 	PublicKey    string `form:"pubkey" binding:"required,base64"`
 	Mtu          int    `form:"mtu" binding:"gte=0,lte=1500"`   // the interface MTU, wg-quick addition
 	IPsStr       string `form:"ip" binding:"required,cidrlist"` // comma separated list of the IPs of the client, wg-quick addition
-	DNSStr       string `form:"dns" binding:"iplist"`           // comma separated list of the DNS servers of the client, wg-quick addition
+	DNSStr       string `form:"dns" binding:"dnsList"`          // comma separated list of the DNS servers of the client, wg-quick addition
 	RoutingTable string `form:"routingtable"`                   // the routing table, wg-quick addition
 	PreUp        string `form:"preup"`                          // pre up script, wg-quick addition
 	PostUp       string `form:"postup"`                         // post up script, wg-quick addition
