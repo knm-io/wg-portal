@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path"
 	"syscall"
 	"time"
@@ -120,6 +120,9 @@ func (s *Server) CreatePeer(device string, peer wireguard.Peer) error {
 	}
 	peer.DeviceName = dev.DeviceName
 	peer.UID = fmt.Sprintf("u%x", md5.Sum([]byte(peer.PublicKey)))
+	if peer.ExpiresAt != nil && peer.ExpiresAt.IsZero() { // convert 01-01-0001 to nil
+		peer.ExpiresAt = nil
+	}
 
 	// Create WireGuard interface
 	if peer.DeactivatedAt == nil {
@@ -141,6 +144,13 @@ func (s *Server) UpdatePeer(peer wireguard.Peer, updateTime time.Time) error {
 	currentPeer := s.peers.GetPeerByKey(peer.PublicKey)
 	dev := s.peers.GetDevice(peer.DeviceName)
 
+	// Check if expiry date is in the future, an reactivate the peer in case.
+	if s.config.Core.ExpiryReEnable && currentPeer.DeactivatedReason == wireguard.DeactivatedReasonExpired &&
+		peer.ExpiresAt != nil && peer.ExpiresAt.After(time.Now()) {
+		peer.DeactivatedAt = nil
+		peer.DeactivatedReason = ""
+	}
+
 	// Update WireGuard device
 	var err error
 	switch {
@@ -156,6 +166,9 @@ func (s *Server) UpdatePeer(peer wireguard.Peer, updateTime time.Time) error {
 	}
 
 	peer.UID = fmt.Sprintf("u%x", md5.Sum([]byte(peer.PublicKey)))
+	if peer.ExpiresAt != nil && peer.ExpiresAt.IsZero() { // convert 01-01-0001 to nil
+		peer.ExpiresAt = nil
+	}
 
 	// Update in database
 	if err := s.peers.UpdatePeer(peer); err != nil {
@@ -211,7 +224,7 @@ func (s *Server) WriteWireGuardConfigFile(device string) error {
 		return errors.WithMessage(err, "failed to get config file")
 	}
 	filePath := path.Join(s.config.WG.ConfigDirectoryPath, dev.DeviceName+".conf")
-	if err := ioutil.WriteFile(filePath, cfg, 0644); err != nil {
+	if err := os.WriteFile(filePath, cfg, 0644); err != nil {
 		return errors.Wrap(err, "failed to write WireGuard config file")
 	}
 	return nil

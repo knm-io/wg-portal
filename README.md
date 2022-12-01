@@ -85,20 +85,42 @@ services:
 ```
 Please note that mapping ```/etc/wireguard``` to ```/etc/wireguard``` inside the docker, will erase your host's current configuration.
 If needed, please make sure to back up your files from ```/etc/wireguard```.
-For a full list of configuration options take a look at the source file [internal/server/configuration.go](internal/server/configuration.go#L56).
+For a full list of configuration options take a look at the source file [internal/server/configuration.go](internal/server/configuration.go#L58).
 
 ### Standalone
 For a standalone application, use the Makefile provided in the repository to build the application. Go version 1.16 or higher has to be installed to build WireGuard Portal.
 
-```
+```shell
+# show all possible make commands
 make
 
-# To build for arm architecture as well use:
-make build-cross-plat
+# build wg-portal for current system architecture
+make build
 ```
 
 The compiled binary will be located in the dist folder.
 A detailed description for using this software with a raspberry pi can be found in the [README-RASPBERRYPI.md](README-RASPBERRYPI.md).
+
+To build the Docker image, Docker (> 20.x) with buildx is required. If you want to build cross-platform images, you need to install qemu.
+On arch linux for example install: `docker-buildx qemu-user-static qemu-user-static-binfmt`.
+
+Once the Docker setup is completed, create a new buildx builder: 
+```shell
+docker buildx create --name wgportalbuilder --platform linux/arm/v7,linux/arm64,linux/amd64
+docker buildx use wgportalbuilder
+docker buildx inspect --bootstrap
+```
+Now you can compile the Docker image:
+```shell
+# multi platform build, can only be exported to tar archives
+docker buildx build --platform linux/arm/v7,linux/arm64,linux/amd64 --output type=local,dest=docker_images \
+  --build-arg BUILD_IDENTIFIER=dev --build-arg BUILD_VERSION=0.1 -t h44z/wg-portal .
+  
+
+# image for current platform only (same as docker build)
+docker buildx build --load \
+  --build-arg BUILD_IDENTIFIER=dev --build-arg BUILD_VERSION=0.1 -t h44z/wg-portal .
+```
 
 ## Configuration
 You can configure WireGuard Portal using either environment variables or a yaml configuration file.
@@ -126,6 +148,7 @@ The following configuration options are available:
 | LDAP_ENABLED               | ldapEnabled             | core        | false                                                                                                           | Enable or disable the LDAP backend.                                                                                                               |
 | SESSION_SECRET             | sessionSecret           | core        | secret                                                                                                          | Use a custom secret to encrypt session data.                                                                                                      |
 | BACKGROUND_TASK_INTERVAL   | backgroundTaskInterval  | core        | 900                                                                                                             | The interval (in seconds) for the background tasks (like peer expiry check).                                                                      |
+| EXPIRY_REENABLE            | expiryReEnable          | core        | false                                                                                                           | Reactivate expired peers if the expiration date is in the future.                                                                                 |
 | DATABASE_TYPE              | typ                     | database    | sqlite                                                                                                          | Either mysql or sqlite.                                                                                                                           |
 | DATABASE_HOST              | host                    | database    |                                                                                                                 | The mysql server address.                                                                                                                         |
 | DATABASE_PORT              | port                    | database    |                                                                                                                 | The mysql server port.                                                                                                                            |
