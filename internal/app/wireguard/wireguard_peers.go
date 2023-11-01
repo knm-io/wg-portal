@@ -292,13 +292,17 @@ func (m Manager) savePeers(ctx context.Context, peers ...*domain.Peer) error {
 }
 
 func (m Manager) getFreshPeerIpConfig(ctx context.Context, iface *domain.Interface) (ips []domain.Cidr, err error) {
+	if iface.PeerDefNetworkStr == "" {
+		return []domain.Cidr{}, nil // cannot suggest new ip addresses if there is no subnet
+	}
+
 	networks, err := domain.CidrsFromString(iface.PeerDefNetworkStr)
 	if err != nil {
 		err = fmt.Errorf("failed to parse default network address: %w", err)
 		return
 	}
 
-	existingIps, err := m.db.GetUsedIpsPerSubnet(ctx)
+	existingIps, err := m.db.GetUsedIpsPerSubnet(ctx, networks)
 	if err != nil {
 		err = fmt.Errorf("failed to get existing IP addresses: %w", err)
 		return
@@ -310,8 +314,9 @@ func (m Manager) getFreshPeerIpConfig(ctx context.Context, iface *domain.Interfa
 		for {
 			ipConflict := false
 			for _, usedIp := range existingIps[network] {
-				if usedIp == ip {
+				if usedIp.Addr == ip.Addr {
 					ipConflict = true
+					break
 				}
 			}
 
@@ -326,7 +331,7 @@ func (m Manager) getFreshPeerIpConfig(ctx context.Context, iface *domain.Interfa
 			}
 		}
 
-		ips = append(ips, ip.HostAddr())
+		ips = append(ips, ip)
 	}
 
 	return

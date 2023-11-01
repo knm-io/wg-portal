@@ -92,7 +92,7 @@ func (i *Interface) CopyCalculatedAttributes(src *Interface) {
 func (i *Interface) GetConfigFileName() string {
 	reg := regexp.MustCompile("[^a-zA-Z0-9-_]+")
 
-	filename := fmt.Sprintf("%s", internal.TruncateString(string(i.Identifier), 8))
+	filename := internal.TruncateString(string(i.Identifier), 8)
 	filename = reg.ReplaceAllString(filename, "")
 	filename += ".conf"
 
@@ -103,7 +103,9 @@ func (i *Interface) GetAllowedIPs(peers []Peer) []Cidr {
 	var allowedCidrs []Cidr
 
 	for _, peer := range peers {
-		allowedCidrs = append(allowedCidrs, peer.Interface.Addresses...)
+		for _, ip := range peer.Interface.Addresses {
+			allowedCidrs = append(allowedCidrs, ip.HostAddr())
+		}
 		if peer.ExtraAllowedIPsStr != "" {
 			extraIPs, err := CidrsFromString(peer.ExtraAllowedIPsStr)
 			if err == nil {
