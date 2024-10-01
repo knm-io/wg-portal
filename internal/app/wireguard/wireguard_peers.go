@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
+
 	"github.com/h44z/wg-portal/internal"
 	"github.com/h44z/wg-portal/internal/app"
 	"github.com/h44z/wg-portal/internal/domain"
 	"github.com/sirupsen/logrus"
-	"time"
 )
 
 func (m Manager) CreateDefaultPeer(ctx context.Context, userId domain.UserIdentifier) error {
@@ -127,8 +128,8 @@ func (m Manager) PreparePeer(ctx context.Context, id domain.InterfaceIdentifier)
 			RoutingTable:      domain.NewStringConfigOption(iface.PeerDefRoutingTable, true),
 			PreUp:             domain.NewStringConfigOption(iface.PeerDefPreUp, true),
 			PostUp:            domain.NewStringConfigOption(iface.PeerDefPostUp, true),
-			PreDown:           domain.NewStringConfigOption(iface.PeerDefPreUp, true),
-			PostDown:          domain.NewStringConfigOption(iface.PeerDefPostUp, true),
+			PreDown:           domain.NewStringConfigOption(iface.PeerDefPreDown, true),
+			PostDown:          domain.NewStringConfigOption(iface.PeerDefPostDown, true),
 		},
 	}
 
@@ -252,6 +253,11 @@ func (m Manager) DeletePeer(ctx context.Context, id domain.PeerIdentifier) error
 	if err != nil {
 		return fmt.Errorf("failed to delete peer %s: %w", id, err)
 	}
+
+	// Update routes after peers have changed
+	m.bus.Publish(app.TopicRouteUpdate, "peers updated")
+	// Update interface after peers have changed
+	m.bus.Publish(app.TopicPeerInterfaceUpdated, peer.InterfaceIdentifier)
 
 	return nil
 }

@@ -98,3 +98,32 @@ resources:
   requests:
     storage: {{ .Values.persistence.size | quote }}
 {{- end -}}
+
+{{/*
+Define hostname
+*/}}
+{{- define "wg-portal.hostname" -}}
+{{- if .Values.config.web.external_url -}}
+  {{- (urlParse (tpl .Values.config.web.external_url .)).hostname -}}
+{{- end -}}
+{{- end -}}
+
+
+{{/*
+wg-portal.util.merge will merge two YAML templates or dict with template and output the result.
+This takes an array of three values:
+- the top context
+- the template name or dict of the overrides (destination)
+- the template name of the base (source)
+{{- include "wg-portal.util.merge" (list $ .Values.podLabels "wg-portal.selectorLabels") }}
+{{- include "wg-portal.util.merge" (list $ "wg-portal.destTemplate" "wg-portal.sourceTemplate") }}
+*/}}
+{{- define "wg-portal.util.merge" -}}
+{{- $top := first . -}}
+{{- $overrides := index . 1 -}}
+{{- $base := fromYaml (include (index . 2) $top) | default (dict) -}}
+{{- if kindIs "string" $overrides -}}
+  {{- $overrides = fromYaml (include $overrides $top) | default (dict) -}}
+{{- end -}}
+{{- toYaml (merge $overrides $base) -}}
+{{- end -}}

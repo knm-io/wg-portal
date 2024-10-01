@@ -2,9 +2,11 @@ package config
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"os"
 	"time"
+
+	"github.com/a8m/envsubst"
+	"github.com/sirupsen/logrus"
 
 	"gopkg.in/yaml.v2"
 )
@@ -27,7 +29,6 @@ type Config struct {
 		LogLevel            string        `yaml:"log_level"`
 		LogPretty           bool          `yaml:"log_pretty"`
 		LogJson             bool          `yaml:"log_json"`
-		LdapSyncInterval    time.Duration `yaml:"ldap_sync_interval"`
 		StartListenPort     int           `yaml:"start_listen_port"`
 		StartCidrV4         string        `yaml:"start_cidr_v4"`
 		StartCidrV6         string        `yaml:"start_cidr_v6"`
@@ -47,6 +48,7 @@ type Config struct {
 		CollectInterfaceData   bool          `yaml:"collect_interface_data"`
 		CollectPeerData        bool          `yaml:"collect_peer_data"`
 		CollectAuditData       bool          `yaml:"collect_audit_data"`
+		ListeningAddress       string        `yaml:"listening_address"`
 	} `yaml:"statistics"`
 
 	Mail MailConfig `yaml:"mail"`
@@ -116,10 +118,11 @@ func defaultConfig() *Config {
 	cfg.Statistics.PingCheckWorkers = 10
 	cfg.Statistics.PingUnprivileged = false
 	cfg.Statistics.PingCheckInterval = 1 * time.Minute
-	cfg.Statistics.DataCollectionInterval = 10 * time.Second
+	cfg.Statistics.DataCollectionInterval = 1 * time.Minute
 	cfg.Statistics.CollectInterfaceData = true
 	cfg.Statistics.CollectPeerData = true
 	cfg.Statistics.CollectAuditData = true
+	cfg.Statistics.ListeningAddress = ":8787"
 
 	cfg.Mail = MailConfig{
 		Host:           "127.0.0.1",
@@ -154,20 +157,14 @@ func GetConfig() (*Config, error) {
 }
 
 func loadConfigFile(cfg any, filename string) error {
-	f, err := os.Open(filename)
+	data, err := envsubst.ReadFile(filename)
 	if err != nil {
-		return err
+		return fmt.Errorf("envsubst error: %v", err)
 	}
-	defer func(f *os.File) {
-		if err := f.Close(); err != nil {
-			logrus.Errorf("failed to close configuration file %s: %v", filename, err)
-		}
-	}(f)
 
-	decoder := yaml.NewDecoder(f)
-	err = decoder.Decode(cfg)
+	err = yaml.Unmarshal(data, cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("yaml error: %v", err)
 	}
 
 	return nil

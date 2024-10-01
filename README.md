@@ -37,16 +37,18 @@ The configuration portal supports using a database (SQLite, MySQL, MsSQL or Post
  * Support for multiple WireGuard interfaces
  * Peer Expiry Feature
  * Handle route and DNS settings like wg-quick does
+ * Exposes Prometheus [metrics](#metrics)
  * ~~REST API for management and client deployment~~ (coming soon)
 
 ![Screenshot](screenshot.png)
 
 
 ## Configuration
-You can configure WireGuard Portal using a yaml configuration file.
-The filepath of the yaml configuration file defaults to **config/config.yml** in the working directory of the executable.
+You can configure WireGuard Portal using a yaml configuration file.  
+The filepath of the yaml configuration file defaults to **config/config.yml** in the working directory of the executable.  
 It is possible to override the configuration filepath using the environment variable **WG_PORTAL_CONFIG**.
-For example: `WG_PORTAL_CONFIG=/home/test/config.yml ./wg-portal-amd64`.
+For example: `WG_PORTAL_CONFIG=/home/test/config.yml ./wg-portal-amd64`.  
+Also, environment variable substitution in config file is supported. Refer to [syntax](https://github.com/a8m/envsubst?tab=readme-ov-file#docs)
 
 By default, WireGuard Portal uses a SQLite database. The database is stored in **data/sqlite.db** in the working directory of the executable.
 
@@ -66,7 +68,6 @@ The following configuration options are available:
 | log_level                       | advanced   | warn                                       | The loglevel, can be one of: trace, debug, info, warn, error.                                                                           |
 | log_pretty                      | advanced   | false                                      | Uses pretty, colorized log messages.                                                                                                    |
 | log_json                        | advanced   | false                                      | Logs in JSON format.                                                                                                                    |
-| ldap_sync_interval              | advanced   | 15m                                        | The time interval after which users will be synchronized from LDAP.                                                                     |
 | start_listen_port               | advanced   | 51820                                      | The first port number that will be used as listening port for new interfaces.                                                           |
 | start_cidr_v4                   | advanced   | 10.11.12.0/24                              | The first IPv4 subnet that will be used for new interfaces.                                                                             |
 | start_cidr_v6                   | advanced   | fdfd:d3ad:c0de:1234::0/64                  | The first IPv6 subnet that will be used for new interfaces.                                                                             |
@@ -79,10 +80,11 @@ The following configuration options are available:
 | ping_check_workers              | statistics | 10                                         | Number of parallel ping checks that will be executed.                                                                                   |
 | ping_unprivileged               | statistics | false                                      | If set to false, the ping checks will run without root permissions (BETA).                                                              |
 | ping_check_interval             | statistics | 1m                                         | The interval time between two ping check runs.                                                                                          |
-| data_collection_interval        | statistics | 10m                                        | The interval between the data collection cycles.                                                                                        |
+| data_collection_interval        | statistics | 1m                                         | The interval between the data collection cycles.                                                                                        |
 | collect_interface_data          | statistics | true                                       | A flag to enable interface data collection like bytes sent and received.                                                                |
 | collect_peer_data               | statistics | true                                       | A flag to enable peer data collection like bytes sent and received, last handshake and remote endpoint address.                         |
 | collect_audit_data              | statistics | true                                       | If enabled, some events, like portal logins, will be logged to the database.                                                            |
+| listening_address               | statistics | :8787                                      | The listening address of the Prometheus metric server.                                                                                  |
 | host                            | mail       | 127.0.0.1                                  | The mail-server address.                                                                                                                |
 | port                            | mail       | 25                                         | The mail-server SMTP port.                                                                                                              |
 | encryption                      | mail       | none                                       | SMTP encryption type, allowed values: none, tls, starttls.                                                                              |
@@ -127,9 +129,9 @@ The following configuration options are available:
 | field_map                       | auth/ldap  |                                            | Mapping of user fields. Internal fields: user_identifier, email, firstname, lastname, phone, department and memberof.                   |
 | login_filter                    | auth/ldap  |                                            | LDAP filters for users that should be allowed to log in. {{login_identifier}} will be replaced with the login username.                 |
 | admin_group                     | auth/ldap  |                                            | Users in this group are marked as administrators.                                                                                       |
-| synchronize                     | auth/ldap  |                                            | Periodically synchronize users (name, department, phone, status, ...) to the WireGuard Portal database.                                 |
 | disable_missing                 | auth/ldap  |                                            | If synchronization is enabled, missing LDAP users will be disabled in WireGuard Portal.                                                 |
 | sync_filter                     | auth/ldap  |                                            | LDAP filters for users that should be synchronized to WireGuard Portal.                                                                 |
+| sync_interval                   | auth/ldap  |                                            | The time interval after which users will be synchronized from LDAP. Empty value or `0` disables synchronization.                        |
 | registration_enabled            | auth/ldap  |                                            | If registration is enabled, new user accounts will created in WireGuard Portal.                                                         |
 | debug                           | database   | false                                      | Debug database statements (log each statement).                                                                                         |
 | slow_query_threshold            | database   |                                            | A threshold for slow database queries. If the threshold is exceeded, a warning message will be logged.                                  |
@@ -143,7 +145,8 @@ The following configuration options are available:
 | csrf_secret                     | web        | extremely_secret                           | The CSRF secret.                                                                                                                        |
 | site_title                      | web        | WireGuard Portal                           | The title that is shown in the web frontend.                                                                                            |
 | site_company_name               | web        | WireGuard Portal                           | The company name that is shown at the bottom of the web frontend.                                                                       |
-
+| cert_file                       | web        |                                            | (Optional) Path to the TLS certificate file                                                                                             |
+| key_file                        | web        |                                            | (Optional) Path to the TLS certificate key file                                                                                         |
 
 ## Upgrading from V1
 
@@ -203,6 +206,48 @@ make build
  * [Bootstrap](https://getbootstrap.com/), for the HTML templates
  * [Vue.JS](https://vuejs.org/), for the frontend
 
+## Metrics
+
+Metrics are available if interface/peer statistic data collection is enabled.
+
+Add following scrape job to your Prometheus config file:
+
+```yaml
+# prometheus.yaml
+scrape_configs:
+  - job_name: "wg-portal"
+    scrape_interval: 60s
+    static_configs:
+      - targets: ["wg-portal:8787"]
+```
+
+Exposed metrics:
+
+```console
+# HELP wireguard_interface_info Interface info.
+# TYPE wireguard_interface_info gauge
+
+# HELP wireguard_interface_received_bytes_total Bytes received througth the interface.
+# TYPE wireguard_interface_received_bytes_total gauge
+
+# HELP wireguard_interface_sent_bytes_total Bytes sent through the interface.
+# TYPE wireguard_interface_sent_bytes_total gauge
+
+# HELP wireguard_peer_info Peer info.
+# TYPE wireguard_peer_info gauge
+
+# HELP wireguard_peer_received_bytes_total Bytes received from the peer.
+# TYPE wireguard_peer_received_bytes_total gauge
+
+# HELP wireguard_peer_sent_bytes_total Bytes sent to the peer.
+# TYPE wireguard_peer_sent_bytes_total gauge
+
+# HELP wireguard_peer_up Peer connection state (boolean: 1/0).
+# TYPE wireguard_peer_up gauge
+
+# HELP wireguard_peer_last_handshake_seconds Seconds from the last handshake with the peer.
+# TYPE wireguard_peer_last_handshake_seconds gauge
+```
 
 ## License
 
