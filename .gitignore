@@ -32,11 +32,11 @@ ssh.key
 .testCoverage.txt
 wg_portal.db
 sqlite.db
-swagger.json
-swagger.yaml
 /config.yml
 /config/
 venv/
 .cache/
 # ignore local frontend dist directory
 internal/app/api/core/frontend-dist
+# mkdocs output directory
+site/

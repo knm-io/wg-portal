@@ -6,8 +6,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/h44z/wg-portal/internal/app"
-	"github.com/sirupsen/logrus"
 	"io"
 	"net/url"
 	"path"
@@ -15,15 +13,17 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	evbus "github.com/vardius/message-bus"
-
+	"github.com/h44z/wg-portal/internal/app"
 	"github.com/h44z/wg-portal/internal/config"
 	"github.com/h44z/wg-portal/internal/domain"
+	"github.com/sirupsen/logrus"
+	evbus "github.com/vardius/message-bus"
 )
 
 type UserManager interface {
 	GetUser(context.Context, domain.UserIdentifier) (*domain.User, error)
 	RegisterUser(ctx context.Context, user *domain.User) error
+	UpdateUser(ctx context.Context, user *domain.User) (*domain.User, error)
 }
 
 type Authenticator struct {
@@ -33,14 +33,21 @@ type Authenticator struct {
 	oauthAuthenticators map[string]domain.OauthAuthenticator
 	ldapAuthenticators  map[string]domain.LdapAuthenticator
 
+	// URL prefix for the callback endpoints, this is a combination of the external URL and the API prefix
+	callbackUrlPrefix string
+
 	users UserManager
 }
 
-func NewAuthenticator(cfg *config.Auth, bus evbus.MessageBus, users UserManager) (*Authenticator, error) {
+func NewAuthenticator(cfg *config.Auth, extUrl string, bus evbus.MessageBus, users UserManager) (
+	*Authenticator,
+	error,
+) {
 	a := &Authenticator{
-		cfg:   cfg,
-		bus:   bus,
-		users: users,
+		cfg:               cfg,
+		bus:               bus,
+		users:             users,
+		callbackUrlPrefix: fmt.Sprintf("%s/api/v0", extUrl),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -55,7 +62,7 @@ func NewAuthenticator(cfg *config.Auth, bus evbus.MessageBus, users UserManager)
 }
 
 func (a *Authenticator) setupExternalAuthProviders(ctx context.Context) error {
-	extUrl, err := url.Parse(a.cfg.CallbackUrlPrefix)
+	extUrl, err := url.Parse(a.callbackUrlPrefix)
 	if err != nil {
 		return fmt.Errorf("failed to parse external url: %w", err)
 	}
@@ -141,8 +148,8 @@ func (a *Authenticator) GetExternalLoginProviders(_ context.Context) []domain.Lo
 		authProviders = append(authProviders, domain.LoginProviderInfo{
 			Identifier:  providerId,
 			Name:        providerName,
-			ProviderUrl: fmt.Sprintf("%s/%s/init", a.cfg.CallbackUrlPrefix, providerId),
-			CallbackUrl: fmt.Sprintf("%s/%s/callback", a.cfg.CallbackUrlPrefix, providerId),
+			ProviderUrl: fmt.Sprintf("/auth/login/%s/init", providerId),
+			CallbackUrl: fmt.Sprintf("/auth/login/%s/callback", providerId),
 		})
 	}
 
@@ -187,8 +194,13 @@ func (a *Authenticator) PlainLogin(ctx context.Context, username, password strin
 	return user, nil
 }
 
-func (a *Authenticator) passwordAuthentication(ctx context.Context, identifier domain.UserIdentifier, password string) (*domain.User, error) {
-	ctx = domain.SetUserInfo(ctx, domain.SystemAdminContextUserInfo()) // switch to admin user context to check if user exists
+func (a *Authenticator) passwordAuthentication(
+	ctx context.Context,
+	identifier domain.UserIdentifier,
+	password string,
+) (*domain.User, error) {
+	ctx = domain.SetUserInfo(ctx,
+		domain.SystemAdminContextUserInfo()) // switch to admin user context to check if user exists
 
 	var ldapUserInfo *domain.AuthenticatorUserInfo
 	var ldapProvider domain.LdapAuthenticator
@@ -235,6 +247,10 @@ func (a *Authenticator) passwordAuthentication(ctx context.Context, identifier d
 		return nil, errors.New("user not found")
 	}
 
+	if userSource == domain.UserSourceLdap && ldapProvider == nil {
+		return nil, errors.New("ldap provider not found")
+	}
+
 	switch userSource {
 	case domain.UserSourceDatabase:
 		err = existingUser.CheckPassword(password)
@@ -248,7 +264,8 @@ func (a *Authenticator) passwordAuthentication(ctx context.Context, identifier d
 	}
 
 	if !userInDatabase {
-		user, err := a.processUserInfo(ctx, ldapUserInfo, domain.UserSourceLdap, ldapProvider.GetName(), ldapProvider.RegistrationEnabled())
+		user, err := a.processUserInfo(ctx, ldapUserInfo, domain.UserSourceLdap, ldapProvider.GetName(),
+			ldapProvider.RegistrationEnabled())
 		if err != nil {
 			return nil, fmt.Errorf("unable to process user information: %w", err)
 		}
@@ -262,7 +279,10 @@ func (a *Authenticator) passwordAuthentication(ctx context.Context, identifier d
 
 // region oauth authentication
 
-func (a *Authenticator) OauthLoginStep1(_ context.Context, providerId string) (authCodeUrl, state, nonce string, err error) {
+func (a *Authenticator) OauthLoginStep1(_ context.Context, providerId string) (
+	authCodeUrl, state, nonce string,
+	err error,
+) {
 	oauthProvider, ok := a.oauthAuthenticators[providerId]
 	if !ok {
 		return "", "", "", fmt.Errorf("missing oauth provider %s", providerId)
@@ -318,8 +338,10 @@ func (a *Authenticator) OauthLoginStep2(ctx context.Context, providerId, nonce, 
 		return nil, fmt.Errorf("unable to parse user information: %w", err)
 	}
 
-	ctx = domain.SetUserInfo(ctx, domain.SystemAdminContextUserInfo()) // switch to admin user context to check if user exists
-	user, err := a.processUserInfo(ctx, userInfo, domain.UserSourceOauth, oauthProvider.GetName(), oauthProvider.RegistrationEnabled())
+	ctx = domain.SetUserInfo(ctx,
+		domain.SystemAdminContextUserInfo()) // switch to admin user context to check if user exists
+	user, err := a.processUserInfo(ctx, userInfo, domain.UserSourceOauth, oauthProvider.GetName(),
+		oauthProvider.RegistrationEnabled())
 	if err != nil {
 		return nil, fmt.Errorf("unable to process user information: %w", err)
 	}
@@ -333,7 +355,13 @@ func (a *Authenticator) OauthLoginStep2(ctx context.Context, providerId, nonce, 
 	return user, nil
 }
 
-func (a *Authenticator) processUserInfo(ctx context.Context, userInfo *domain.AuthenticatorUserInfo, source domain.UserSource, provider string, withReg bool) (*domain.User, error) {
+func (a *Authenticator) processUserInfo(
+	ctx context.Context,
+	userInfo *domain.AuthenticatorUserInfo,
+	source domain.UserSource,
+	provider string,
+	withReg bool,
+) (*domain.User, error) {
 	// Search user in backend
 	user, err := a.users.GetUser(ctx, userInfo.Identifier)
 	switch {
@@ -344,12 +372,22 @@ func (a *Authenticator) processUserInfo(ctx context.Context, userInfo *domain.Au
 		}
 	case err != nil:
 		return nil, fmt.Errorf("registration disabled, cannot create missing user: %w", err)
+	default:
+		err = a.updateExternalUser(ctx, user, userInfo, source, provider)
+		if err != nil {
+			return nil, fmt.Errorf("failed to update user: %w", err)
+		}
 	}
 
 	return user, nil
 }
 
-func (a *Authenticator) registerNewUser(ctx context.Context, userInfo *domain.AuthenticatorUserInfo, source domain.UserSource, provider string) (*domain.User, error) {
+func (a *Authenticator) registerNewUser(
+	ctx context.Context,
+	userInfo *domain.AuthenticatorUserInfo,
+	source domain.UserSource,
+	provider string,
+) (*domain.User, error) {
 	// convert user info to domain.User
 	user := &domain.User{
 		Identifier:   userInfo.Identifier,
@@ -368,6 +406,9 @@ func (a *Authenticator) registerNewUser(ctx context.Context, userInfo *domain.Au
 		return nil, fmt.Errorf("failed to register new user: %w", err)
 	}
 
+	logrus.Tracef("registered user %s from external authentication provider, admin user: %t",
+		user.Identifier, user.IsAdmin)
+
 	return user, nil
 }
 
@@ -385,6 +426,66 @@ func (a *Authenticator) getAuthenticatorConfig(id string) (interface{}, error) {
 	}
 
 	return nil, fmt.Errorf("no configuration for Authenticator id %s", id)
+}
+
+func (a *Authenticator) updateExternalUser(
+	ctx context.Context,
+	existingUser *domain.User,
+	userInfo *domain.AuthenticatorUserInfo,
+	source domain.UserSource,
+	provider string,
+) error {
+	if existingUser.IsLocked() || existingUser.IsDisabled() {
+		return nil // user is locked or disabled, do not update
+	}
+
+	isChanged := false
+	if existingUser.Email != userInfo.Email {
+		existingUser.Email = userInfo.Email
+		isChanged = true
+	}
+	if existingUser.Firstname != userInfo.Firstname {
+		existingUser.Firstname = userInfo.Firstname
+		isChanged = true
+	}
+	if existingUser.Lastname != userInfo.Lastname {
+		existingUser.Lastname = userInfo.Lastname
+		isChanged = true
+	}
+	if existingUser.Phone != userInfo.Phone {
+		existingUser.Phone = userInfo.Phone
+		isChanged = true
+	}
+	if existingUser.Department != userInfo.Department {
+		existingUser.Department = userInfo.Department
+		isChanged = true
+	}
+	if existingUser.IsAdmin != userInfo.IsAdmin {
+		existingUser.IsAdmin = userInfo.IsAdmin
+		isChanged = true
+	}
+	if existingUser.Source != source {
+		existingUser.Source = source
+		isChanged = true
+	}
+	if existingUser.ProviderName != provider {
+		existingUser.ProviderName = provider
+		isChanged = true
+	}
+
+	if !isChanged {
+		return nil // nothing to update
+	}
+
+	_, err := a.users.UpdateUser(ctx, existingUser)
+	if err != nil {
+		return fmt.Errorf("failed to update user: %w", err)
+	}
+
+	logrus.Tracef("updated user %s with data from external authentication provider, admin user: %t",
+		existingUser.Identifier, existingUser.IsAdmin)
+
+	return nil
 }
 
 // endregion oauth authentication

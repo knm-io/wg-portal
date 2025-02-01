@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/h44z/wg-portal/internal/app"
 
 	"github.com/h44z/wg-portal/internal"
@@ -30,7 +31,10 @@ type Manager struct {
 	peers PeerDatabaseRepo
 }
 
-func NewUserManager(cfg *config.Config, bus evbus.MessageBus, users UserDatabaseRepo, peers PeerDatabaseRepo) (*Manager, error) {
+func NewUserManager(cfg *config.Config, bus evbus.MessageBus, users UserDatabaseRepo, peers PeerDatabaseRepo) (
+	*Manager,
+	error,
+) {
 	m := &Manager{
 		cfg: cfg,
 		bus: bus,
@@ -69,11 +73,16 @@ func (m Manager) NewUser(ctx context.Context, user *domain.User) error {
 		u.Identifier = user.Identifier
 		u.Email = user.Email
 		u.Source = user.Source
+		u.ProviderName = user.ProviderName
 		u.IsAdmin = user.IsAdmin
 		u.Firstname = user.Firstname
 		u.Lastname = user.Lastname
 		u.Phone = user.Phone
 		u.Department = user.Department
+		u.Notes = user.Notes
+		u.ApiToken = user.ApiToken
+		u.ApiTokenCreated = user.ApiTokenCreated
+
 		return u, nil
 	})
 	if err != nil {
@@ -98,9 +107,27 @@ func (m Manager) GetUser(ctx context.Context, id domain.UserIdentifier) (*domain
 
 	user, err := m.users.GetUser(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("unable to load peer %s: %w", id, err)
+		return nil, fmt.Errorf("unable to load user %s: %w", id, err)
 	}
 	peers, _ := m.peers.GetUserPeers(ctx, id) // ignore error, list will be empty in error case
+
+	user.LinkedPeerCount = len(peers)
+
+	return user, nil
+}
+
+func (m Manager) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
+
+	user, err := m.users.GetUserByEmail(ctx, email)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load user for email %s: %w", email, err)
+	}
+
+	if err := domain.ValidateUserAccessRights(ctx, user.Identifier); err != nil {
+		return nil, err
+	}
+
+	peers, _ := m.peers.GetUserPeers(ctx, user.Identifier) // ignore error, list will be empty in error case
 
 	user.LinkedPeerCount = len(peers)
 
@@ -170,6 +197,13 @@ func (m Manager) UpdateUser(ctx context.Context, user *domain.User) (*domain.Use
 		return nil, fmt.Errorf("update failure: %w", err)
 	}
 
+	switch {
+	case !existingUser.IsDisabled() && user.IsDisabled():
+		m.bus.Publish(app.TopicUserDisabled, *user)
+	case existingUser.IsDisabled() && !user.IsDisabled():
+		m.bus.Publish(app.TopicUserEnabled, *user)
+	}
+
 	return user, nil
 }
 
@@ -183,7 +217,7 @@ func (m Manager) CreateUser(ctx context.Context, user *domain.User) (*domain.Use
 		return nil, fmt.Errorf("unable to load existing user %s: %w", user.Identifier, err)
 	}
 	if existingUser != nil {
-		return nil, fmt.Errorf("user %s already exists", user.Identifier)
+		return nil, errors.Join(fmt.Errorf("user %s already exists", user.Identifier), domain.ErrDuplicateEntry)
 	}
 
 	if err := m.validateCreation(ctx, user); err != nil {
@@ -225,9 +259,62 @@ func (m Manager) DeleteUser(ctx context.Context, id domain.UserIdentifier) error
 		return fmt.Errorf("deletion failure: %w", err)
 	}
 
-	m.bus.Publish(app.TopicUserDeleted, existingUser)
+	m.bus.Publish(app.TopicUserDeleted, *existingUser)
 
 	return nil
+}
+
+func (m Manager) ActivateApi(ctx context.Context, id domain.UserIdentifier) (*domain.User, error) {
+	user, err := m.users.GetUser(ctx, id)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return nil, fmt.Errorf("unable to find user %s: %w", id, err)
+	}
+
+	if err := m.validateApiChange(ctx, user); err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	user.ApiToken = uuid.New().String()
+	user.ApiTokenCreated = &now
+
+	err = m.users.SaveUser(ctx, user.Identifier, func(u *domain.User) (*domain.User, error) {
+		user.CopyCalculatedAttributes(u)
+		return user, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("update failure: %w", err)
+	}
+
+	m.bus.Publish(app.TopicUserApiEnabled, user)
+
+	return user, nil
+}
+
+func (m Manager) DeactivateApi(ctx context.Context, id domain.UserIdentifier) (*domain.User, error) {
+	user, err := m.users.GetUser(ctx, id)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return nil, fmt.Errorf("unable to find user %s: %w", id, err)
+	}
+
+	if err := m.validateApiChange(ctx, user); err != nil {
+		return nil, err
+	}
+
+	user.ApiToken = ""
+	user.ApiTokenCreated = nil
+
+	err = m.users.SaveUser(ctx, user.Identifier, func(u *domain.User) (*domain.User, error) {
+		user.CopyCalculatedAttributes(u)
+		return user, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("update failure: %w", err)
+	}
+
+	m.bus.Publish(app.TopicUserApiDisabled, user)
+
+	return user, nil
 }
 
 func (m Manager) validateModifications(ctx context.Context, old, new *domain.User) error {
@@ -237,28 +324,28 @@ func (m Manager) validateModifications(ctx context.Context, old, new *domain.Use
 		return fmt.Errorf("insufficient permissions")
 	}
 
-	if err := old.EditAllowed(new); err != nil {
-		return fmt.Errorf("no access: %w", err)
+	if err := old.EditAllowed(new); err != nil && currentUser.Id != domain.SystemAdminContextUserInfo().Id {
+		return errors.Join(fmt.Errorf("no access: %w", err), domain.ErrInvalidData)
 	}
 
 	if err := old.CanChangePassword(); err != nil && string(new.Password) != "" {
-		return fmt.Errorf("no access: %w", err)
+		return errors.Join(fmt.Errorf("no access: %w", err), domain.ErrInvalidData)
 	}
 
 	if currentUser.Id == old.Identifier && old.IsAdmin && !new.IsAdmin {
-		return fmt.Errorf("cannot remove own admin rights")
+		return fmt.Errorf("cannot remove own admin rights: %w", domain.ErrInvalidData)
 	}
 
 	if currentUser.Id == old.Identifier && new.IsDisabled() {
-		return fmt.Errorf("cannot disable own user")
+		return fmt.Errorf("cannot disable own user: %w", domain.ErrInvalidData)
 	}
 
 	if currentUser.Id == old.Identifier && new.IsLocked() {
-		return fmt.Errorf("cannot lock own user")
+		return fmt.Errorf("cannot lock own user: %w", domain.ErrInvalidData)
 	}
 
 	if old.Source != new.Source {
-		return fmt.Errorf("cannot change user source")
+		return fmt.Errorf("cannot change user source: %w", domain.ErrInvalidData)
 	}
 
 	return nil
@@ -272,19 +359,32 @@ func (m Manager) validateCreation(ctx context.Context, new *domain.User) error {
 	}
 
 	if new.Identifier == "" {
-		return fmt.Errorf("invalid user identifier")
+		return fmt.Errorf("invalid user identifier: %w", domain.ErrInvalidData)
 	}
 
-	if new.Identifier == "all" { // the all user identifier collides with the rest api routes
-		return fmt.Errorf("reserved user identifier")
+	if new.Identifier == "all" { // the 'all' user identifier collides with the rest api routes
+		return fmt.Errorf("reserved user identifier: %w", domain.ErrInvalidData)
+	}
+
+	if new.Identifier == "new" { // the 'new' user identifier collides with the rest api routes
+		return fmt.Errorf("reserved user identifier: %w", domain.ErrInvalidData)
+	}
+
+	if new.Identifier == "id" { // the 'id' user identifier collides with the rest api routes
+		return fmt.Errorf("reserved user identifier: %w", domain.ErrInvalidData)
+	}
+
+	if new.Identifier == domain.CtxSystemAdminId || new.Identifier == domain.CtxUnknownUserId {
+		return fmt.Errorf("reserved user identifier: %w", domain.ErrInvalidData)
 	}
 
 	if new.Source != domain.UserSourceDatabase {
-		return fmt.Errorf("invalid user source: %s", new.Source)
+		return fmt.Errorf("invalid user source: %s, only %s is allowed: %w",
+			new.Source, domain.UserSourceDatabase, domain.ErrInvalidData)
 	}
 
 	if string(new.Password) == "" {
-		return fmt.Errorf("invalid password")
+		return fmt.Errorf("invalid password: %w", domain.ErrInvalidData)
 	}
 
 	return nil
@@ -294,15 +394,25 @@ func (m Manager) validateDeletion(ctx context.Context, del *domain.User) error {
 	currentUser := domain.GetUserInfo(ctx)
 
 	if !currentUser.IsAdmin {
-		return fmt.Errorf("insufficient permissions")
+		return domain.ErrNoPermission
 	}
 
 	if err := del.DeleteAllowed(); err != nil {
-		return fmt.Errorf("no access: %w", err)
+		return errors.Join(fmt.Errorf("no access: %w", err), domain.ErrInvalidData)
 	}
 
 	if currentUser.Id == del.Identifier {
-		return fmt.Errorf("cannot delete own user")
+		return fmt.Errorf("cannot delete own user: %w", domain.ErrInvalidData)
+	}
+
+	return nil
+}
+
+func (m Manager) validateApiChange(ctx context.Context, user *domain.User) error {
+	currentUser := domain.GetUserInfo(ctx)
+
+	if currentUser.Id != user.Identifier {
+		return fmt.Errorf("cannot change API access of user: %w", domain.ErrNoPermission)
 	}
 
 	return nil
@@ -316,13 +426,14 @@ func (m Manager) runLdapSynchronizationService(ctx context.Context) {
 				logrus.Debugf("sync disabled for LDAP server: %s", cfg.ProviderName)
 				return
 			}
+
 			running := true
 			for running {
 				select {
 				case <-ctx.Done():
 					running = false
 					continue
-				case <-time.After(syncInterval * time.Second):
+				case <-time.After(syncInterval):
 					// select blocks until one of the cases evaluate to true
 				}
 
@@ -355,10 +466,10 @@ func (m Manager) synchronizeLdapUsers(ctx context.Context, provider *config.Ldap
 		return err
 	}
 
-	logrus.Tracef("fetched %d raw ldap users...", len(rawUsers))
+	logrus.Tracef("fetched %d raw ldap users from provider %s...", len(rawUsers), provider.ProviderName)
 
 	// Update existing LDAP users
-	err = m.updateLdapUsers(ctx, provider.ProviderName, rawUsers, &provider.FieldMap, provider.ParsedAdminGroupDN)
+	err = m.updateLdapUsers(ctx, provider, rawUsers, &provider.FieldMap, provider.ParsedAdminGroupDN)
 	if err != nil {
 		return err
 	}
@@ -374,9 +485,15 @@ func (m Manager) synchronizeLdapUsers(ctx context.Context, provider *config.Ldap
 	return nil
 }
 
-func (m Manager) updateLdapUsers(ctx context.Context, providerName string, rawUsers []internal.RawLdapUser, fields *config.LdapFields, adminGroupDN *ldap.DN) error {
+func (m Manager) updateLdapUsers(
+	ctx context.Context,
+	provider *config.LdapProvider,
+	rawUsers []internal.RawLdapUser,
+	fields *config.LdapFields,
+	adminGroupDN *ldap.DN,
+) error {
 	for _, rawUser := range rawUsers {
-		user, err := convertRawLdapUser(providerName, rawUser, fields, adminGroupDN)
+		user, err := convertRawLdapUser(provider.ProviderName, rawUser, fields, adminGroupDN)
 		if err != nil && !errors.Is(err, domain.ErrNotFound) {
 			return fmt.Errorf("failed to convert LDAP data for %v: %w", rawUser["dn"], err)
 		}
@@ -386,42 +503,68 @@ func (m Manager) updateLdapUsers(ctx context.Context, providerName string, rawUs
 			return fmt.Errorf("find error for user id %s: %w", user.Identifier, err)
 		}
 
-		tctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		tctx = domain.SetUserInfo(tctx, domain.SystemAdminContextUserInfo())
 
+		// create new user
 		if existingUser == nil {
 			err := m.NewUser(tctx, user)
 			if err != nil {
+				cancel()
 				return fmt.Errorf("create error for user id %s: %w", user.Identifier, err)
 			}
+
+			cancel()
+			return nil
 		}
 
-		if existingUser != nil && existingUser.Source == domain.UserSourceLdap && userChangedInLdap(existingUser, user) {
-
+		// update existing user
+		if provider.AutoReEnable && existingUser.DisabledReason == domain.DisabledReasonLdapMissing {
+			user.Disabled = nil
+			user.DisabledReason = ""
+		} else {
+			user.Disabled = existingUser.Disabled
+			user.DisabledReason = existingUser.DisabledReason
+		}
+		if existingUser.Source == domain.UserSourceLdap && userChangedInLdap(existingUser, user) {
 			err := m.users.SaveUser(tctx, user.Identifier, func(u *domain.User) (*domain.User, error) {
 				u.UpdatedAt = time.Now()
-				u.UpdatedBy = "ldap_sync"
+				u.UpdatedBy = domain.CtxSystemLdapSyncer
+				u.Source = user.Source
+				u.ProviderName = user.ProviderName
 				u.Email = user.Email
 				u.Firstname = user.Firstname
 				u.Lastname = user.Lastname
 				u.Phone = user.Phone
 				u.Department = user.Department
 				u.IsAdmin = user.IsAdmin
-				u.Disabled = user.Disabled
+				u.Disabled = nil
+				u.DisabledReason = ""
 
 				return u, nil
 			})
 			if err != nil {
+				cancel()
 				return fmt.Errorf("update error for user id %s: %w", user.Identifier, err)
 			}
+
+			if existingUser.IsDisabled() && !user.IsDisabled() {
+				m.bus.Publish(app.TopicUserEnabled, *user)
+			}
 		}
+
+		cancel()
 	}
 
 	return nil
 }
 
-func (m Manager) disableMissingLdapUsers(ctx context.Context, providerName string, rawUsers []internal.RawLdapUser, fields *config.LdapFields) error {
+func (m Manager) disableMissingLdapUsers(
+	ctx context.Context,
+	providerName string,
+	rawUsers []internal.RawLdapUser,
+	fields *config.LdapFields,
+) error {
 	allUsers, err := m.users.GetAllUsers(ctx)
 	if err != nil {
 		return err
@@ -450,10 +593,15 @@ func (m Manager) disableMissingLdapUsers(ctx context.Context, providerName strin
 			continue
 		}
 
+		logrus.Tracef("user %s is missing in ldap provider %s, disabling", user.Identifier, providerName)
+
+		now := time.Now()
+		user.Disabled = &now
+		user.DisabledReason = domain.DisabledReasonLdapMissing
+
 		err := m.users.SaveUser(ctx, user.Identifier, func(u *domain.User) (*domain.User, error) {
-			now := time.Now()
-			u.Disabled = &now
-			u.DisabledReason = "missing in ldap"
+			u.Disabled = user.Disabled
+			u.DisabledReason = user.DisabledReason
 			return u, nil
 		})
 		if err != nil {

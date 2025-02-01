@@ -68,6 +68,34 @@ func (m Manager) GetAllInterfacesAndPeers(ctx context.Context) ([]domain.Interfa
 	return interfaces, allPeers, nil
 }
 
+// GetUserInterfaces returns all interfaces that are available for users to create new peers.
+// If self-provisioning is disabled, this function will return an empty list.
+func (m Manager) GetUserInterfaces(ctx context.Context, id domain.UserIdentifier) ([]domain.Interface, error) {
+	if !m.cfg.Core.SelfProvisioningAllowed {
+		return nil, nil // self-provisioning is disabled - no interfaces for users
+	}
+
+	interfaces, err := m.db.GetAllInterfaces(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load all interfaces: %w", err)
+	}
+
+	// strip sensitive data, users only need very limited information
+	userInterfaces := make([]domain.Interface, 0, len(interfaces))
+	for _, iface := range interfaces {
+		if iface.IsDisabled() {
+			continue // skip disabled interfaces
+		}
+		if iface.Type != domain.InterfaceTypeServer {
+			continue // skip client interfaces
+		}
+
+		userInterfaces = append(userInterfaces, iface.PublicInfo())
+	}
+
+	return userInterfaces, nil
+}
+
 func (m Manager) ImportNewInterfaces(ctx context.Context, filter ...domain.InterfaceIdentifier) (int, error) {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return 0, err
@@ -175,14 +203,11 @@ func (m Manager) RestoreInterfaceState(
 		}
 
 		_, err = m.wg.GetInterface(ctx, iface.Identifier)
-		if err != nil {
+		if err != nil && !iface.IsDisabled() {
 			logrus.Debugf("creating missing interface %s...", iface.Identifier)
 
 			// try to create a new interface
-			_, err = m.saveInterface(ctx, &iface, peers)
-			if err != nil {
-				return err
-			}
+			_, err = m.saveInterface(ctx, &iface)
 			if err != nil {
 				if updateDbOnError {
 					// disable interface in database as no physical interface exists
@@ -196,23 +221,11 @@ func (m Manager) RestoreInterfaceState(
 				}
 				return fmt.Errorf("failed to create physical interface %s: %w", iface.Identifier, err)
 			}
-
-			// restore peers
-			for _, peer := range peers {
-				err := m.wg.SavePeer(ctx, iface.Identifier, peer.Identifier,
-					func(pp *domain.PhysicalPeer) (*domain.PhysicalPeer, error) {
-						domain.MergeToPhysicalPeer(pp, &peer)
-						return pp, nil
-					})
-				if err != nil {
-					return fmt.Errorf("failed to create physical peer %s: %w", peer.Identifier, err)
-				}
-			}
 		} else {
 			logrus.Debugf("restoring interface state for %s to disabled=%t", iface.Identifier, iface.IsDisabled())
 
 			// try to move interface to stored state
-			_, err = m.saveInterface(ctx, &iface, peers)
+			_, err = m.saveInterface(ctx, &iface)
 			if err != nil {
 				if updateDbOnError {
 					// disable interface in database as no physical interface is available
@@ -230,6 +243,51 @@ func (m Manager) RestoreInterfaceState(
 						})
 				}
 				return fmt.Errorf("failed to change physical interface state for %s: %w", iface.Identifier, err)
+			}
+		}
+
+		// restore peers
+		for _, peer := range peers {
+			switch {
+			case iface.IsDisabled(): // if interface is disabled, delete all peers
+				if err := m.wg.DeletePeer(ctx, iface.Identifier, peer.Identifier); err != nil {
+					return fmt.Errorf("failed to remove peer %s for disabled interface %s: %w",
+						peer.Identifier, iface.Identifier, err)
+				}
+			case peer.IsDisabled(): // if peer is disabled, delete it
+				if err := m.wg.DeletePeer(ctx, iface.Identifier, peer.Identifier); err != nil {
+					return fmt.Errorf("failed to remove disbaled peer %s from interface %s: %w",
+						peer.Identifier, iface.Identifier, err)
+				}
+			default: // update peer
+				err := m.wg.SavePeer(ctx, iface.Identifier, peer.Identifier,
+					func(pp *domain.PhysicalPeer) (*domain.PhysicalPeer, error) {
+						domain.MergeToPhysicalPeer(pp, &peer)
+						return pp, nil
+					})
+				if err != nil {
+					return fmt.Errorf("failed to create/update physical peer %s for interface %s: %w",
+						peer.Identifier, iface.Identifier, err)
+				}
+			}
+		}
+
+		// remove non-wgportal peers
+		physicalPeers, _ := m.wg.GetPeers(ctx, iface.Identifier)
+		for _, physicalPeer := range physicalPeers {
+			isWgPortalPeer := false
+			for _, peer := range peers {
+				if peer.Identifier == domain.PeerIdentifier(physicalPeer.PublicKey) {
+					isWgPortalPeer = true
+					break
+				}
+			}
+			if !isWgPortalPeer {
+				err := m.wg.DeletePeer(ctx, iface.Identifier, domain.PeerIdentifier(physicalPeer.PublicKey))
+				if err != nil {
+					return fmt.Errorf("failed to remove non-wgportal peer %s from interface %s: %w",
+						physicalPeer.PublicKey, iface.Identifier, err)
+				}
 			}
 		}
 	}
@@ -327,14 +385,14 @@ func (m Manager) CreateInterface(ctx context.Context, in *domain.Interface) (*do
 		return nil, fmt.Errorf("unable to load existing interface %s: %w", in.Identifier, err)
 	}
 	if existingInterface != nil {
-		return nil, fmt.Errorf("interface %s already exists", in.Identifier)
+		return nil, fmt.Errorf("interface %s already exists: %w", in.Identifier, domain.ErrDuplicateEntry)
 	}
 
 	if err := m.validateInterfaceCreation(ctx, existingInterface, in); err != nil {
 		return nil, fmt.Errorf("creation not allowed: %w", err)
 	}
 
-	in, err = m.saveInterface(ctx, in, nil)
+	in, err = m.saveInterface(ctx, in)
 	if err != nil {
 		return nil, fmt.Errorf("creation failure: %w", err)
 	}
@@ -356,7 +414,7 @@ func (m Manager) UpdateInterface(ctx context.Context, in *domain.Interface) (*do
 		return nil, nil, fmt.Errorf("update not allowed: %w", err)
 	}
 
-	in, err = m.saveInterface(ctx, in, existingPeers)
+	in, err = m.saveInterface(ctx, in)
 	if err != nil {
 		return nil, nil, fmt.Errorf("update failure: %w", err)
 	}
@@ -422,10 +480,14 @@ func (m Manager) DeleteInterface(ctx context.Context, id domain.InterfaceIdentif
 
 // region helper-functions
 
-func (m Manager) saveInterface(ctx context.Context, iface *domain.Interface, peers []domain.Peer) (
+func (m Manager) saveInterface(ctx context.Context, iface *domain.Interface) (
 	*domain.Interface,
 	error,
 ) {
+	if err := iface.Validate(); err != nil {
+		return nil, fmt.Errorf("interface validation failed: %w", err)
+	}
+
 	stateChanged := m.hasInterfaceStateChanged(ctx, iface)
 
 	if err := m.handleInterfacePreSaveHooks(stateChanged, iface); err != nil {
@@ -454,7 +516,6 @@ func (m Manager) saveInterface(ctx context.Context, iface *domain.Interface, pee
 		return nil, fmt.Errorf("failed to save interface: %w", err)
 	}
 
-	m.bus.Publish(app.TopicRouteUpdate, "interface updated: "+string(iface.Identifier))
 	if iface.IsDisabled() {
 		physicalInterface, _ := m.wg.GetInterface(ctx, iface.Identifier)
 		fwMark := iface.FirewallMark
@@ -465,6 +526,8 @@ func (m Manager) saveInterface(ctx context.Context, iface *domain.Interface, pee
 			FwMark: fwMark,
 			Table:  iface.GetRoutingTable(),
 		})
+	} else {
+		m.bus.Publish(app.TopicRouteUpdate, "interface updated: "+string(iface.Identifier))
 	}
 
 	if err := m.handleInterfacePostSaveHooks(stateChanged, iface); err != nil {
@@ -674,8 +737,8 @@ func (m Manager) importInterface(ctx context.Context, in *domain.PhysicalInterfa
 	now := time.Now()
 	iface := domain.ConvertPhysicalInterface(in)
 	iface.BaseModel = domain.BaseModel{
-		CreatedBy: "importer",
-		UpdatedBy: "importer",
+		CreatedBy: domain.CtxSystemWgImporter,
+		UpdatedBy: domain.CtxSystemWgImporter,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -711,8 +774,8 @@ func (m Manager) importPeer(ctx context.Context, in *domain.Interface, p *domain
 	now := time.Now()
 	peer := domain.ConvertPhysicalPeer(p)
 	peer.BaseModel = domain.BaseModel{
-		CreatedBy: "importer",
-		UpdatedBy: "importer",
+		CreatedBy: domain.CtxSystemWgImporter,
+		UpdatedBy: domain.CtxSystemWgImporter,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -792,6 +855,13 @@ func (m Manager) validateInterfaceCreation(ctx context.Context, old, new *domain
 
 	if !currentUser.IsAdmin {
 		return fmt.Errorf("insufficient permissions")
+	}
+
+	// validate public key if it is set
+	if new.PublicKey != "" && new.PrivateKey != "" {
+		if domain.PublicKeyFromPrivateKey(new.PrivateKey) != new.PublicKey {
+			return fmt.Errorf("invalid public key for given privatekey: %w", domain.ErrInvalidData)
+		}
 	}
 
 	return nil

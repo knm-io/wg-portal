@@ -9,6 +9,8 @@ import (
 
 	"github.com/h44z/wg-portal/internal/app/api/core"
 	handlersV0 "github.com/h44z/wg-portal/internal/app/api/v0/handlers"
+	backendV1 "github.com/h44z/wg-portal/internal/app/api/v1/backend"
+	handlersV1 "github.com/h44z/wg-portal/internal/app/api/v1/handlers"
 	"github.com/h44z/wg-portal/internal/app/audit"
 	"github.com/h44z/wg-portal/internal/app/auth"
 	"github.com/h44z/wg-portal/internal/app/configfile"
@@ -72,13 +74,13 @@ func main() {
 	userManager, err := users.NewUserManager(cfg, eventBus, database, database)
 	internal.AssertNoError(err)
 
-	authenticator, err := auth.NewAuthenticator(&cfg.Auth, eventBus, userManager)
+	authenticator, err := auth.NewAuthenticator(&cfg.Auth, cfg.Web.ExternalUrl, eventBus, userManager)
 	internal.AssertNoError(err)
 
 	wireGuardManager, err := wireguard.NewWireGuardManager(cfg, eventBus, wireGuard, wgQuick, database)
 	internal.AssertNoError(err)
 
-	statisticsCollector, err := wireguard.NewStatisticsCollector(cfg, database, wireGuard, metricsServer)
+	statisticsCollector, err := wireguard.NewStatisticsCollector(cfg, eventBus, database, wireGuard, metricsServer)
 	internal.AssertNoError(err)
 
 	cfgFileManager, err := configfile.NewConfigFileManager(cfg, eventBus, database, database, cfgFileSystem)
@@ -103,7 +105,27 @@ func main() {
 
 	apiFrontend := handlersV0.NewRestApi(cfg, backend)
 
-	webSrv, err := core.NewServer(cfg, apiFrontend)
+	apiV1BackendUsers := backendV1.NewUserService(cfg, userManager)
+	apiV1BackendPeers := backendV1.NewPeerService(cfg, wireGuardManager, userManager)
+	apiV1BackendInterfaces := backendV1.NewInterfaceService(cfg, wireGuardManager)
+	apiV1BackendProvisioning := backendV1.NewProvisioningService(cfg, userManager, wireGuardManager, cfgFileManager)
+	apiV1BackendMetrics := backendV1.NewMetricsService(cfg, database, userManager, wireGuardManager)
+	apiV1EndpointUsers := handlersV1.NewUserEndpoint(apiV1BackendUsers)
+	apiV1EndpointPeers := handlersV1.NewPeerEndpoint(apiV1BackendPeers)
+	apiV1EndpointInterfaces := handlersV1.NewInterfaceEndpoint(apiV1BackendInterfaces)
+	apiV1EndpointProvisioning := handlersV1.NewProvisioningEndpoint(apiV1BackendProvisioning)
+	apiV1EndpointMetrics := handlersV1.NewMetricsEndpoint(apiV1BackendMetrics)
+
+	apiV1 := handlersV1.NewRestApi(
+		userManager,
+		apiV1EndpointUsers,
+		apiV1EndpointPeers,
+		apiV1EndpointInterfaces,
+		apiV1EndpointProvisioning,
+		apiV1EndpointMetrics,
+	)
+
+	webSrv, err := core.NewServer(cfg, apiFrontend, apiV1)
 	internal.AssertNoError(err)
 
 	go metricsServer.Run(ctx)
@@ -132,7 +154,7 @@ func setupLogging(cfg *config.Config) {
 	case "error":
 		logrus.SetLevel(logrus.ErrorLevel)
 	default:
-		logrus.SetLevel(logrus.WarnLevel)
+		logrus.SetLevel(logrus.InfoLevel)
 	}
 
 	switch {

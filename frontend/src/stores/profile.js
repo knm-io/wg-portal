@@ -12,6 +12,8 @@ export const profileStore = defineStore({
   id: 'profile',
   state: () => ({
     peers: [],
+    interfaces: [],
+    selectedInterfaceId: "",
     stats: {},
     statsEnabled: false,
     user: {},
@@ -71,6 +73,7 @@ export const profileStore = defineStore({
       return (id) => state.statsEnabled && (id in state.stats) ? state.stats[id] : freshStats()
     },
     hasStatistics: (state) => state.statsEnabled,
+    CountInterfaces: (state) => state.interfaces.length,
   },
   actions: {
     afterPageSizeChange() {
@@ -116,6 +119,39 @@ export const profileStore = defineStore({
       this.stats = statsResponse.Stats
       this.statsEnabled = statsResponse.Enabled
     },
+    setInterfaces(interfaces) {
+      this.interfaces = interfaces
+      this.selectedInterfaceId = interfaces.length > 0 ? interfaces[0].Identifier : ""
+      this.fetching = false
+    },
+    async enableApi() {
+      this.fetching = true
+      let currentUser = authStore().user.Identifier
+      return apiWrapper.post(`${baseUrl}/${base64_url_encode(currentUser)}/api/enable`)
+          .then(this.setUser)
+          .catch(error => {
+            this.setPeers([])
+            console.log("Failed to activate API for ", currentUser, ": ", error)
+            notify({
+              title: "Backend Connection Failure",
+              text: "Failed to activate API!",
+            })
+          })
+    },
+    async disableApi() {
+      this.fetching = true
+      let currentUser = authStore().user.Identifier
+      return apiWrapper.post(`${baseUrl}/${base64_url_encode(currentUser)}/api/disable`)
+          .then(this.setUser)
+          .catch(error => {
+            this.setPeers([])
+            console.log("Failed to deactivate API for ", currentUser, ": ", error)
+            notify({
+              title: "Backend Connection Failure",
+              text: "Failed to deactivate API!",
+            })
+          })
+    },
     async LoadPeers() {
       this.fetching = true
       let currentUser = authStore().user.Identifier
@@ -157,6 +193,20 @@ export const profileStore = defineStore({
             text: "Failed to load user!",
           })
         })
+    },
+    async LoadInterfaces() {
+      this.fetching = true
+      let currentUser = authStore().user.Identifier
+      return apiWrapper.get(`${baseUrl}/${base64_url_encode(currentUser)}/interfaces`)
+          .then(this.setInterfaces)
+          .catch(error => {
+            this.setInterfaces([])
+            console.log("Failed to load interfaces for ", currentUser, ": ", error)
+            notify({
+              title: "Backend Connection Failure",
+              text: "Failed to load interfaces!",
+            })
+          })
     },
   }
 })

@@ -4,7 +4,7 @@ site_description: Manage WireGuard Peers and Interface using a beautiful and sim
 site_url: https://wgportal.org/
 repo_name: h44z/wg-portal
 repo_url: https://github.com/h44z/wg-portal
-copyright: Copyright &copy; 2023-2024 WireGuard Portal Project
+copyright: Copyright &copy; 2023-2025 WireGuard Portal Project
 
 extra_css:
   - stylesheets/extra.css
@@ -19,14 +19,17 @@ theme:
   favicon: assets/images/favicon-large.png
   language: en
   features:
+    - content.code.copy
     - navigation.instant
     - navigation.tabs
+    - navigation.expand
 
 plugins:
   - search
   - social
   - minify:
       minify_html: true
+  - swagger-ui-tag
 
 extra:
   version:
@@ -44,6 +47,7 @@ markdown_extensions:
   - admonition
   - meta
   - pymdownx.details
+  - pymdownx.snippets
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
@@ -57,6 +61,13 @@ nav:
   - Documentation:
       - Overview: documentation/overview.md
       - Getting Started:
-          - Building: documentation/getting-started/building.md
-          - Docker Container: documentation/getting-started/docker.md
-          - Upgrade from V1: documentation/getting-started/upgrade.md
+          - Binaries: documentation/getting-started/binaries.md
+          - Docker: documentation/getting-started/docker.md
+          - Helm: documentation/getting-started/helm.md
+          - Sources: documentation/getting-started/sources.md
+      - Configuration:
+          - Overview: documentation/configuration/overview.md
+          - Examples: documentation/configuration/examples.md
+      - Upgrade: documentation/upgrade/v1.md
+      - Monitoring: documentation/monitoring/prometheus.md
+      - REST API: documentation/rest-api/api-doc.md
