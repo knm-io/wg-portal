@@ -1,6 +1,6 @@
 # wg-portal
 
-![Version: 0.7.0](https://img.shields.io/badge/Version-0.7.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v2](https://img.shields.io/badge/AppVersion-v2-informational?style=flat-square)
+![Version: 0.7.1](https://img.shields.io/badge/Version-0.7.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v2](https://img.shields.io/badge/AppVersion-v2-informational?style=flat-square)
 
 WireGuard Configuration Portal with LDAP, OAuth, OIDC authentication
 
@@ -102,6 +102,7 @@ The [Values](#values) section lists the parameters that can be configured during
 | persistence.storageClass | string | `""` | Persistent Volume storage class. If undefined (the default) cluster's default provisioner will be used. |
 | persistence.accessMode | string | `"ReadWriteOnce"` | Persistent Volume Access Mode |
 | persistence.size | string | `"1Gi"` | Persistent Volume size |
+| persistence.volumeName | string | `""` | Persistent Volume Name (optional) |
 | serviceAccount.create | bool | `true` | Specifies whether a service account should be created |
 | serviceAccount.annotations | object | `{}` | Service account annotations |
 | serviceAccount.automount | bool | `false` | Automatically mount a ServiceAccount's API credentials |

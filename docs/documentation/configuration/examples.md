@@ -6,6 +6,7 @@ Below are some sample YAML configurations demonstrating how to override some def
 core:
   admin_user: test@example.com
   admin_password: password
+  admin_api_token: super-s3cr3t-api-token-or-a-UUID
   import_existing: false
   create_default_peer: true
   self_provisioning_allowed: true
@@ -102,7 +103,7 @@ auth:
         department: department
         is_admin: wg_admin
       admin_mapping:
-        - admin_value_regex: ^true$
+        admin_value_regex: ^true$
       registration_enabled: true
       log_user_info: true
 
@@ -125,7 +126,7 @@ auth:
         department: department
         user_groups: groups
       admin_mapping:
-        - admin_group_regex: ^the-admin-group$
+        admin_group_regex: ^the-admin-group$
       registration_enabled: true
       log_user_info: true
 ```
@@ -157,7 +158,7 @@ auth:
         firstname: name
         is_admin: this-attribute-must-be-true
       admin_mapping:
-        - admin_value_regex: ^(True|true)$
+        admin_value_regex: ^(True|true)$
       registration_enabled: true
     
     # a sample provider where either users with the attribute `this-attribute-must-be-true` set to `true` or 
