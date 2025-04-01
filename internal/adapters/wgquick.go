@@ -3,12 +3,12 @@ package adapters
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 
 	"github.com/h44z/wg-portal/internal"
 	"github.com/h44z/wg-portal/internal/domain"
-	"github.com/sirupsen/logrus"
 )
 
 // WgQuickRepo implements higher level wg-quick like interactions like setting DNS, routing tables or interface hooks.
@@ -17,6 +17,7 @@ type WgQuickRepo struct {
 	resolvConfIfacePrefix string
 }
 
+// NewWgQuickRepo creates a new WgQuickRepo instance.
 func NewWgQuickRepo() *WgQuickRepo {
 	return &WgQuickRepo{
 		shellCmd:              "bash",
@@ -24,12 +25,16 @@ func NewWgQuickRepo() *WgQuickRepo {
 	}
 }
 
+// ExecuteInterfaceHook executes the given hook command.
+// The hook command can contain the following placeholders:
+//
+//	%i: the interface identifier.
 func (r *WgQuickRepo) ExecuteInterfaceHook(id domain.InterfaceIdentifier, hookCmd string) error {
 	if hookCmd == "" {
 		return nil
 	}
 
-	logrus.Tracef("interface %s: executing hook %s", id, hookCmd)
+	slog.Debug("executing interface hook", "interface", id, "hook", hookCmd)
 	err := r.exec(hookCmd, id)
 	if err != nil {
 		return fmt.Errorf("failed to exec hook: %w", err)
@@ -38,6 +43,7 @@ func (r *WgQuickRepo) ExecuteInterfaceHook(id domain.InterfaceIdentifier, hookCm
 	return nil
 }
 
+// SetDNS sets the DNS settings for the given interface. It uses resolvconf to set the DNS settings.
 func (r *WgQuickRepo) SetDNS(id domain.InterfaceIdentifier, dnsStr, dnsSearchStr string) error {
 	if dnsStr == "" && dnsSearchStr == "" {
 		return nil
@@ -67,6 +73,7 @@ func (r *WgQuickRepo) SetDNS(id domain.InterfaceIdentifier, dnsStr, dnsSearchStr
 	return nil
 }
 
+// UnsetDNS unsets the DNS settings for the given interface. It uses resolvconf to unset the DNS settings.
 func (r *WgQuickRepo) UnsetDNS(id domain.InterfaceIdentifier) error {
 	dnsCommand := "resolvconf -d %resPref%i -f"
 
@@ -99,6 +106,8 @@ func (r *WgQuickRepo) exec(command string, interfaceId domain.InterfaceIdentifie
 	if err != nil {
 		return fmt.Errorf("failed to exexute shell command %s: %w", commandWithInterfaceName, err)
 	}
-	logrus.Tracef("executed shell command %s, with output: %s", commandWithInterfaceName, string(out))
+	slog.Debug("executed shell command",
+		"command", commandWithInterfaceName,
+		"output", string(out))
 	return nil
 }

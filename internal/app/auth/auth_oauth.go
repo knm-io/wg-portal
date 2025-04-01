@@ -5,15 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"golang.org/x/oauth2"
+
+	"github.com/h44z/wg-portal/internal"
 	"github.com/h44z/wg-portal/internal/config"
 	"github.com/h44z/wg-portal/internal/domain"
-	"github.com/sirupsen/logrus"
-	"golang.org/x/oauth2"
 )
 
+// PlainOauthAuthenticator is an authenticator that uses OAuth for authentication.
+// User information is retrieved from the specified user info endpoint.
 type PlainOauthAuthenticator struct {
 	name                string
 	cfg                 *oauth2.Config
@@ -56,22 +60,27 @@ func newPlainOauthAuthenticator(
 	return provider, nil
 }
 
+// GetName returns the name of the OAuth authenticator.
 func (p PlainOauthAuthenticator) GetName() string {
 	return p.name
 }
 
+// RegistrationEnabled returns whether registration is enabled for the OAuth authenticator.
 func (p PlainOauthAuthenticator) RegistrationEnabled() bool {
 	return p.registrationEnabled
 }
 
-func (p PlainOauthAuthenticator) GetType() domain.AuthenticatorType {
-	return domain.AuthenticatorTypeOAuth
+// GetType returns the type of the authenticator.
+func (p PlainOauthAuthenticator) GetType() AuthenticatorType {
+	return AuthenticatorTypeOAuth
 }
 
+// AuthCodeURL returns the URL to redirect the user to for authentication.
 func (p PlainOauthAuthenticator) AuthCodeURL(state string, opts ...oauth2.AuthCodeOption) string {
 	return p.cfg.AuthCodeURL(state, opts...)
 }
 
+// Exchange exchanges the OAuth code for a token.
 func (p PlainOauthAuthenticator) Exchange(
 	ctx context.Context,
 	code string,
@@ -80,11 +89,12 @@ func (p PlainOauthAuthenticator) Exchange(
 	return p.cfg.Exchange(ctx, code, opts...)
 }
 
+// GetUserInfo retrieves the user information from the user info endpoint.
 func (p PlainOauthAuthenticator) GetUserInfo(
 	ctx context.Context,
 	token *oauth2.Token,
 	_ string,
-) (map[string]interface{}, error) {
+) (map[string]any, error) {
 	req, err := http.NewRequest("GET", p.userInfoEndpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create user info get request: %w", err)
@@ -96,25 +106,28 @@ func (p PlainOauthAuthenticator) GetUserInfo(
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user info: %w", err)
 	}
-	defer response.Body.Close()
+	defer internal.LogClose(response.Body)
 	contents, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	var userFields map[string]interface{}
+	var userFields map[string]any
 	err = json.Unmarshal(contents, &userFields)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse user info: %w", err)
 	}
 
 	if p.userInfoLogging {
-		logrus.Tracef("User info from OAuth source %s: %v", p.name, string(contents))
+		slog.Debug("OAuth user info",
+			"source", p.name,
+			"info", string(contents))
 	}
 
 	return userFields, nil
 }
 
-func (p PlainOauthAuthenticator) ParseUserInfo(raw map[string]interface{}) (*domain.AuthenticatorUserInfo, error) {
+// ParseUserInfo parses the user information from the raw data.
+func (p PlainOauthAuthenticator) ParseUserInfo(raw map[string]any) (*domain.AuthenticatorUserInfo, error) {
 	return parseOauthUserInfo(p.userInfoMapping, p.userAdminMapping, raw)
 }

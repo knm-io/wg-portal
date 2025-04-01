@@ -13,6 +13,8 @@ import (
 //go:embed tpl_files/*
 var TemplateFiles embed.FS
 
+// TemplateHandler is responsible for rendering the WireGuard configuration files
+// based on the provided templates.
 type TemplateHandler struct {
 	templates *template.Template
 }
@@ -34,13 +36,14 @@ func newTemplateHandler() (*TemplateHandler, error) {
 	return handler, nil
 }
 
+// GetInterfaceConfig returns the rendered configuration file for a WireGuard interface.
 func (c TemplateHandler) GetInterfaceConfig(cfg *domain.Interface, peers []domain.Peer) (io.Reader, error) {
 	var tplBuff bytes.Buffer
 
-	err := c.templates.ExecuteTemplate(&tplBuff, "wg_interface.tpl", map[string]interface{}{
+	err := c.templates.ExecuteTemplate(&tplBuff, "wg_interface.tpl", map[string]any{
 		"Interface": cfg,
 		"Peers":     peers,
-		"Portal": map[string]interface{}{
+		"Portal": map[string]any{
 			"Version": "unknown",
 		},
 	})
@@ -51,12 +54,13 @@ func (c TemplateHandler) GetInterfaceConfig(cfg *domain.Interface, peers []domai
 	return &tplBuff, nil
 }
 
+// GetPeerConfig returns the rendered configuration file for a WireGuard peer.
 func (c TemplateHandler) GetPeerConfig(peer *domain.Peer) (io.Reader, error) {
 	var tplBuff bytes.Buffer
 
-	err := c.templates.ExecuteTemplate(&tplBuff, "wg_peer.tpl", map[string]interface{}{
+	err := c.templates.ExecuteTemplate(&tplBuff, "wg_peer.tpl", map[string]any{
 		"Peer": peer,
-		"Portal": map[string]interface{}{
+		"Portal": map[string]any{
 			"Version": "unknown",
 		},
 	})

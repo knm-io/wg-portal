@@ -14,6 +14,7 @@ import (
 //go:embed tpl_files/*
 var TemplateFiles embed.FS
 
+// TemplateHandler is a struct that holds the html and text templates.
 type TemplateHandler struct {
 	portalUrl     string
 	htmlTemplates *htmlTemplate.Template
@@ -40,11 +41,12 @@ func newTemplateHandler(portalUrl string) (*TemplateHandler, error) {
 	return handler, nil
 }
 
+// GetConfigMail returns the text and html template for the mail with a link.
 func (c TemplateHandler) GetConfigMail(user *domain.User, link string) (io.Reader, io.Reader, error) {
 	var tplBuff bytes.Buffer
 	var htmlTplBuff bytes.Buffer
 
-	err := c.textTemplates.ExecuteTemplate(&tplBuff, "mail_with_link.gotpl", map[string]interface{}{
+	err := c.textTemplates.ExecuteTemplate(&tplBuff, "mail_with_link.gotpl", map[string]any{
 		"User":      user,
 		"Link":      link,
 		"PortalUrl": c.portalUrl,
@@ -53,7 +55,7 @@ func (c TemplateHandler) GetConfigMail(user *domain.User, link string) (io.Reade
 		return nil, nil, fmt.Errorf("failed to execute template mail_with_link.gotpl: %w", err)
 	}
 
-	err = c.htmlTemplates.ExecuteTemplate(&htmlTplBuff, "mail_with_link.gohtml", map[string]interface{}{
+	err = c.htmlTemplates.ExecuteTemplate(&htmlTplBuff, "mail_with_link.gohtml", map[string]any{
 		"User":      user,
 		"Link":      link,
 		"PortalUrl": c.portalUrl,
@@ -65,11 +67,16 @@ func (c TemplateHandler) GetConfigMail(user *domain.User, link string) (io.Reade
 	return &tplBuff, &htmlTplBuff, nil
 }
 
-func (c TemplateHandler) GetConfigMailWithAttachment(user *domain.User, cfgName, qrName string) (io.Reader, io.Reader, error) {
+// GetConfigMailWithAttachment returns the text and html template for the mail with an attachment.
+func (c TemplateHandler) GetConfigMailWithAttachment(user *domain.User, cfgName, qrName string) (
+	io.Reader,
+	io.Reader,
+	error,
+) {
 	var tplBuff bytes.Buffer
 	var htmlTplBuff bytes.Buffer
 
-	err := c.textTemplates.ExecuteTemplate(&tplBuff, "mail_with_attachment.gotpl", map[string]interface{}{
+	err := c.textTemplates.ExecuteTemplate(&tplBuff, "mail_with_attachment.gotpl", map[string]any{
 		"User":           user,
 		"ConfigFileName": cfgName,
 		"QrcodePngName":  qrName,
@@ -79,7 +86,7 @@ func (c TemplateHandler) GetConfigMailWithAttachment(user *domain.User, cfgName,
 		return nil, nil, fmt.Errorf("failed to execute template mail_with_attachment.gotpl: %w", err)
 	}
 
-	err = c.htmlTemplates.ExecuteTemplate(&htmlTplBuff, "mail_with_attachment.gohtml", map[string]interface{}{
+	err = c.htmlTemplates.ExecuteTemplate(&htmlTplBuff, "mail_with_attachment.gohtml", map[string]any{
 		"User":           user,
 		"ConfigFileName": cfgName,
 		"QrcodePngName":  qrName,

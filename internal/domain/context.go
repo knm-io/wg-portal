@@ -3,10 +3,7 @@ package domain
 import (
 	"context"
 	"fmt"
-
-	"github.com/sirupsen/logrus"
-
-	"github.com/gin-gonic/gin"
+	"log/slog"
 )
 
 const CtxUserInfo = "userInfo"
@@ -48,21 +45,6 @@ func SystemAdminContextUserInfo() *ContextUserInfo {
 	}
 }
 
-// SetUserInfoFromGin sets the user info from the gin context to the request context.
-func SetUserInfoFromGin(c *gin.Context) context.Context {
-	ginUserInfo, exists := c.Get(CtxUserInfo)
-
-	info := DefaultContextUserInfo()
-	if exists {
-		if ginInfo, ok := ginUserInfo.(*ContextUserInfo); ok {
-			info = ginInfo
-		}
-	}
-
-	ctx := SetUserInfo(c.Request.Context(), info)
-	return ctx
-}
-
 // SetUserInfo sets the user info in the context.
 func SetUserInfo(ctx context.Context, info *ContextUserInfo) context.Context {
 	ctx = context.WithValue(ctx, CtxUserInfo, info)
@@ -96,7 +78,10 @@ func ValidateUserAccessRights(ctx context.Context, requiredUser UserIdentifier) 
 		return nil // User can access own data
 	}
 
-	logrus.Warnf("insufficient permissions for %s (want %s), stack: %s", sessionUser.Id, requiredUser, GetStackTrace())
+	slog.Warn("insufficient permissions",
+		"user", sessionUser.Id,
+		"requiredUser", requiredUser,
+		"stack", GetStackTrace())
 	return ErrNoPermission
 }
 
@@ -108,6 +93,8 @@ func ValidateAdminAccessRights(ctx context.Context) error {
 		return nil
 	}
 
-	logrus.Warnf("insufficient admin permissions for %s, stack: %s", sessionUser.Id, GetStackTrace())
+	slog.Warn("insufficient admin permissions",
+		"user", sessionUser.Id,
+		"stack", GetStackTrace())
 	return ErrNoPermission
 }

@@ -4,34 +4,60 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"time"
 
+	"github.com/go-ldap/ldap/v3"
 	"github.com/google/uuid"
-	"github.com/h44z/wg-portal/internal/app"
 
 	"github.com/h44z/wg-portal/internal"
-
-	"github.com/go-ldap/ldap/v3"
-
-	"github.com/sirupsen/logrus"
-
-	evbus "github.com/vardius/message-bus"
-
+	"github.com/h44z/wg-portal/internal/app"
 	"github.com/h44z/wg-portal/internal/config"
 	"github.com/h44z/wg-portal/internal/domain"
 )
 
+// region dependencies
+
+type UserDatabaseRepo interface {
+	// GetUser returns the user with the given identifier.
+	GetUser(ctx context.Context, id domain.UserIdentifier) (*domain.User, error)
+	// GetUserByEmail returns the user with the given email address.
+	GetUserByEmail(ctx context.Context, email string) (*domain.User, error)
+	// GetAllUsers returns all users.
+	GetAllUsers(ctx context.Context) ([]domain.User, error)
+	// FindUsers returns all users matching the search string.
+	FindUsers(ctx context.Context, search string) ([]domain.User, error)
+	// SaveUser saves the user with the given identifier.
+	SaveUser(ctx context.Context, id domain.UserIdentifier, updateFunc func(u *domain.User) (*domain.User, error)) error
+	// DeleteUser deletes the user with the given identifier.
+	DeleteUser(ctx context.Context, id domain.UserIdentifier) error
+}
+
+type PeerDatabaseRepo interface {
+	// GetUserPeers returns all peers linked to the given user.
+	GetUserPeers(ctx context.Context, id domain.UserIdentifier) ([]domain.Peer, error)
+}
+
+type EventBus interface {
+	// Publish sends a message to the message bus.
+	Publish(topic string, args ...any)
+}
+
+// endregion dependencies
+
+// Manager is the user manager.
 type Manager struct {
 	cfg *config.Config
-	bus evbus.MessageBus
 
+	bus   EventBus
 	users UserDatabaseRepo
 	peers PeerDatabaseRepo
 }
 
-func NewUserManager(cfg *config.Config, bus evbus.MessageBus, users UserDatabaseRepo, peers PeerDatabaseRepo) (
+// NewUserManager creates a new user manager instance.
+func NewUserManager(cfg *config.Config, bus EventBus, users UserDatabaseRepo, peers PeerDatabaseRepo) (
 	*Manager,
 	error,
 ) {
@@ -45,6 +71,7 @@ func NewUserManager(cfg *config.Config, bus evbus.MessageBus, users UserDatabase
 	return m, nil
 }
 
+// RegisterUser registers a new user.
 func (m Manager) RegisterUser(ctx context.Context, user *domain.User) error {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return err
@@ -60,6 +87,7 @@ func (m Manager) RegisterUser(ctx context.Context, user *domain.User) error {
 	return nil
 }
 
+// NewUser creates a new user.
 func (m Manager) NewUser(ctx context.Context, user *domain.User) error {
 	if user.Identifier == "" {
 		return errors.New("missing user identifier")
@@ -94,12 +122,13 @@ func (m Manager) NewUser(ctx context.Context, user *domain.User) error {
 	return nil
 }
 
+// StartBackgroundJobs starts the background jobs.
+// This method is non-blocking and returns immediately.
 func (m Manager) StartBackgroundJobs(ctx context.Context) {
-
 	go m.runLdapSynchronizationService(ctx)
-
 }
 
+// GetUser returns the user with the given identifier.
 func (m Manager) GetUser(ctx context.Context, id domain.UserIdentifier) (*domain.User, error) {
 	if err := domain.ValidateUserAccessRights(ctx, id); err != nil {
 		return nil, err
@@ -116,6 +145,7 @@ func (m Manager) GetUser(ctx context.Context, id domain.UserIdentifier) (*domain
 	return user, nil
 }
 
+// GetUserByEmail returns the user with the given email address.
 func (m Manager) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {
 
 	user, err := m.users.GetUserByEmail(ctx, email)
@@ -134,6 +164,7 @@ func (m Manager) GetUserByEmail(ctx context.Context, email string) (*domain.User
 	return user, nil
 }
 
+// GetAllUsers returns all users.
 func (m Manager) GetAllUsers(ctx context.Context) ([]domain.User, error) {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return nil, err
@@ -166,6 +197,7 @@ func (m Manager) GetAllUsers(ctx context.Context) ([]domain.User, error) {
 	return users, nil
 }
 
+// UpdateUser updates the user with the given identifier.
 func (m Manager) UpdateUser(ctx context.Context, user *domain.User) (*domain.User, error) {
 	if err := domain.ValidateUserAccessRights(ctx, user.Identifier); err != nil {
 		return nil, err
@@ -207,6 +239,7 @@ func (m Manager) UpdateUser(ctx context.Context, user *domain.User) (*domain.Use
 	return user, nil
 }
 
+// CreateUser creates a new user.
 func (m Manager) CreateUser(ctx context.Context, user *domain.User) (*domain.User, error) {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return nil, err
@@ -240,6 +273,7 @@ func (m Manager) CreateUser(ctx context.Context, user *domain.User) (*domain.Use
 	return user, nil
 }
 
+// DeleteUser deletes the user with the given identifier.
 func (m Manager) DeleteUser(ctx context.Context, id domain.UserIdentifier) error {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return err
@@ -264,6 +298,7 @@ func (m Manager) DeleteUser(ctx context.Context, id domain.UserIdentifier) error
 	return nil
 }
 
+// ActivateApi activates the API access for the user with the given identifier.
 func (m Manager) ActivateApi(ctx context.Context, id domain.UserIdentifier) (*domain.User, error) {
 	user, err := m.users.GetUser(ctx, id)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
@@ -291,6 +326,7 @@ func (m Manager) ActivateApi(ctx context.Context, id domain.UserIdentifier) (*do
 	return user, nil
 }
 
+// DeactivateApi deactivates the API access for the user with the given identifier.
 func (m Manager) DeactivateApi(ctx context.Context, id domain.UserIdentifier) (*domain.User, error) {
 	user, err := m.users.GetUser(ctx, id)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
@@ -423,7 +459,7 @@ func (m Manager) runLdapSynchronizationService(ctx context.Context) {
 		go func(cfg config.LdapProvider) {
 			syncInterval := cfg.SyncInterval
 			if syncInterval == 0 {
-				logrus.Debugf("sync disabled for LDAP server: %s", cfg.ProviderName)
+				slog.Debug("sync disabled for LDAP server", "provider", cfg.ProviderName)
 				return
 			}
 
@@ -439,7 +475,7 @@ func (m Manager) runLdapSynchronizationService(ctx context.Context) {
 
 				err := m.synchronizeLdapUsers(ctx, &cfg)
 				if err != nil {
-					logrus.Errorf("failed to synchronize LDAP users for %s: %v", cfg.ProviderName, err)
+					slog.Error("failed to synchronize LDAP users", "provider", cfg.ProviderName, "error", err)
 				}
 			}
 		}(ldapCfg)
@@ -447,7 +483,7 @@ func (m Manager) runLdapSynchronizationService(ctx context.Context) {
 }
 
 func (m Manager) synchronizeLdapUsers(ctx context.Context, provider *config.LdapProvider) error {
-	logrus.Tracef("starting to synchronize users for %s", provider.ProviderName)
+	slog.Debug("starting to synchronize users", "provider", provider.ProviderName)
 
 	dn, err := ldap.ParseDN(provider.AdminGroupDN)
 	if err != nil {
@@ -466,7 +502,7 @@ func (m Manager) synchronizeLdapUsers(ctx context.Context, provider *config.Ldap
 		return err
 	}
 
-	logrus.Tracef("fetched %d raw ldap users from provider %s...", len(rawUsers), provider.ProviderName)
+	slog.Debug("fetched raw ldap users", "count", len(rawUsers), "provider", provider.ProviderName)
 
 	// Update existing LDAP users
 	err = m.updateLdapUsers(ctx, provider, rawUsers, &provider.FieldMap, provider.ParsedAdminGroupDN)
@@ -508,8 +544,8 @@ func (m Manager) updateLdapUsers(
 
 		if existingUser == nil {
 			// create new user
-			logrus.Tracef("creating new user %s from provider %s...", user.Identifier, provider.ProviderName)
-			
+			slog.Debug("creating new user from provider", "user", user.Identifier, "provider", provider.ProviderName)
+
 			err := m.NewUser(tctx, user)
 			if err != nil {
 				cancel()
@@ -592,7 +628,7 @@ func (m Manager) disableMissingLdapUsers(
 			continue
 		}
 
-		logrus.Tracef("user %s is missing in ldap provider %s, disabling", user.Identifier, providerName)
+		slog.Debug("user is missing in ldap provider, disabling", "user", user.Identifier, "provider", providerName)
 
 		now := time.Now()
 		user.Disabled = &now

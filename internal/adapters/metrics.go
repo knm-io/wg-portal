@@ -2,16 +2,18 @@ package adapters
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/h44z/wg-portal/internal"
 	"github.com/h44z/wg-portal/internal/config"
 	"github.com/h44z/wg-portal/internal/domain"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/sirupsen/logrus"
 )
 
 type MetricsServer struct {
@@ -84,16 +86,16 @@ func NewMetricsServer(cfg *config.Config) *MetricsServer {
 	}
 }
 
-// Run starts the metrics server
+// Run starts the metrics server. The function blocks until the context is cancelled.
 func (m *MetricsServer) Run(ctx context.Context) {
 	// Run the metrics server in a goroutine
 	go func() {
-		if err := m.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logrus.Errorf("metrics service on %s exited: %v", m.Addr, err)
+		if err := m.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("metrics service exited", "address", m.Addr, "error", err)
 		}
 	}()
 
-	logrus.Infof("started metrics service on %s", m.Addr)
+	slog.Info("started metrics service", "address", m.Addr)
 
 	// Wait for the context to be done
 	<-ctx.Done()
@@ -102,11 +104,11 @@ func (m *MetricsServer) Run(ctx context.Context) {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Attempt to gracefully shutdown the metrics server
+	// Attempt to gracefully shut down the metrics server
 	if err := m.Shutdown(shutdownCtx); err != nil {
-		logrus.Errorf("metrics service on %s shutdown failed: %v", m.Addr, err)
+		slog.Error("metrics service shutdown failed", "address", m.Addr, "error", err)
 	} else {
-		logrus.Infof("metrics service on %s shutdown gracefully", m.Addr)
+		slog.Info("metrics service shutdown gracefully", "address", m.Addr)
 	}
 }
 
@@ -121,9 +123,9 @@ func (m *MetricsServer) UpdateInterfaceMetrics(status domain.InterfaceStatus) {
 func (m *MetricsServer) UpdatePeerMetrics(peer *domain.Peer, status domain.PeerStatus) {
 	labels := []string{
 		string(peer.InterfaceIdentifier),
-		string(peer.Interface.AddressStr()),
+		peer.Interface.AddressStr(),
 		string(status.PeerId),
-		string(peer.DisplayName),
+		peer.DisplayName,
 	}
 
 	if status.LastHandshake != nil {

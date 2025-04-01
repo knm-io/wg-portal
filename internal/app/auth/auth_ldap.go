@@ -4,15 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/go-ldap/ldap/v3"
+
 	"github.com/h44z/wg-portal/internal"
 	"github.com/h44z/wg-portal/internal/config"
 	"github.com/h44z/wg-portal/internal/domain"
-	"github.com/sirupsen/logrus"
 )
 
+// LdapAuthenticator is an authenticator that uses LDAP for authentication.
 type LdapAuthenticator struct {
 	cfg *config.LdapProvider
 }
@@ -32,14 +34,17 @@ func newLdapAuthenticator(_ context.Context, cfg *config.LdapProvider) (*LdapAut
 	return provider, nil
 }
 
+// GetName returns the name of the LDAP authenticator.
 func (l LdapAuthenticator) GetName() string {
 	return l.cfg.ProviderName
 }
 
+// RegistrationEnabled returns whether registration is enabled for the LDAP authenticator.
 func (l LdapAuthenticator) RegistrationEnabled() bool {
 	return l.cfg.RegistrationEnabled
 }
 
+// PlaintextAuthentication performs a plaintext authentication against the LDAP server.
 func (l LdapAuthenticator) PlaintextAuthentication(userId domain.UserIdentifier, plainPassword string) error {
 	conn, err := internal.LdapConnect(l.cfg)
 	if err != nil {
@@ -80,8 +85,11 @@ func (l LdapAuthenticator) PlaintextAuthentication(userId domain.UserIdentifier,
 	return nil
 }
 
+// GetUserInfo retrieves user information from the LDAP server.
+// If the user is not found, domain.ErrNotFound is returned.
+// If multiple users are found, domain.ErrNotUnique is returned.
 func (l LdapAuthenticator) GetUserInfo(_ context.Context, userId domain.UserIdentifier) (
-	map[string]interface{},
+	map[string]any,
 	error,
 ) {
 	conn, err := internal.LdapConnect(l.cfg)
@@ -116,13 +124,17 @@ func (l LdapAuthenticator) GetUserInfo(_ context.Context, userId domain.UserIden
 
 	if l.cfg.LogUserInfo {
 		contents, _ := json.Marshal(users[0])
-		logrus.Tracef("User info from LDAP source %s for %s: %v", l.GetName(), userId, string(contents))
+		slog.Debug("LDAP user info",
+			"source", l.GetName(),
+			"userId", userId,
+			"info", string(contents))
 	}
 
 	return users[0], nil
 }
 
-func (l LdapAuthenticator) ParseUserInfo(raw map[string]interface{}) (*domain.AuthenticatorUserInfo, error) {
+// ParseUserInfo parses the user information from the LDAP server into a domain.AuthenticatorUserInfo struct.
+func (l LdapAuthenticator) ParseUserInfo(raw map[string]any) (*domain.AuthenticatorUserInfo, error) {
 	isAdmin, err := internal.LdapIsMemberOf(raw[l.cfg.FieldMap.GroupMembership].([][]byte), l.cfg.ParsedAdminGroupDN)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check admin group: %w", err)

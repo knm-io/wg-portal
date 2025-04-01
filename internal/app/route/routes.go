@@ -3,18 +3,34 @@ package route
 import (
 	"context"
 	"fmt"
+	"log/slog"
+
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
+	"golang.zx2c4.com/wireguard/wgctrl"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
 	"github.com/h44z/wg-portal/internal/app"
 	"github.com/h44z/wg-portal/internal/config"
 	"github.com/h44z/wg-portal/internal/domain"
 	"github.com/h44z/wg-portal/internal/lowlevel"
-	"github.com/sirupsen/logrus"
-	evbus "github.com/vardius/message-bus"
-	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
-	"golang.zx2c4.com/wireguard/wgctrl"
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
+
+// region dependencies
+
+type InterfaceAndPeerDatabaseRepo interface {
+	// GetAllInterfaces returns all interfaces
+	GetAllInterfaces(ctx context.Context) ([]domain.Interface, error)
+	// GetInterfacePeers returns all peers for a given interface
+	GetInterfacePeers(ctx context.Context, id domain.InterfaceIdentifier) ([]domain.Peer, error)
+}
+
+type EventBus interface {
+	// Subscribe subscribes to a topic
+	Subscribe(topic string, fn interface{}) error
+}
+
+// endregion dependencies
 
 type routeRuleInfo struct {
 	ifaceId    domain.InterfaceIdentifier
@@ -28,14 +44,15 @@ type routeRuleInfo struct {
 // for default routes.
 type Manager struct {
 	cfg *config.Config
-	bus evbus.MessageBus
 
-	wg lowlevel.WireGuardClient
-	nl lowlevel.NetlinkClient
-	db InterfaceAndPeerDatabaseRepo
+	bus EventBus
+	wg  lowlevel.WireGuardClient
+	nl  lowlevel.NetlinkClient
+	db  InterfaceAndPeerDatabaseRepo
 }
 
-func NewRouteManager(cfg *config.Config, bus evbus.MessageBus, db InterfaceAndPeerDatabaseRepo) (*Manager, error) {
+// NewRouteManager creates a new route manager instance.
+func NewRouteManager(cfg *config.Config, bus EventBus, db InterfaceAndPeerDatabaseRepo) (*Manager, error) {
 	wg, err := wgctrl.New()
 	if err != nil {
 		panic("failed to init wgctrl: " + err.Error())
@@ -62,35 +79,40 @@ func (m Manager) connectToMessageBus() {
 	_ = m.bus.Subscribe(app.TopicRouteRemove, m.handleRouteRemoveEvent)
 }
 
-func (m Manager) StartBackgroundJobs(ctx context.Context) {
+// StartBackgroundJobs starts background jobs for the route manager.
+// This method is non-blocking and returns immediately.
+func (m Manager) StartBackgroundJobs(_ context.Context) {
+	// this is a no-op for now
 }
 
 func (m Manager) handleRouteUpdateEvent(srcDescription string) {
-	logrus.Debugf("handling route update event: %s", srcDescription)
+	slog.Debug("handling route update event", "source", srcDescription)
 
 	err := m.syncRoutes(context.Background())
 	if err != nil {
-		logrus.Errorf("failed to synchronize routes for event %s: %v", srcDescription, err)
+		slog.Error("failed to synchronize routes",
+			"source", srcDescription,
+			"error", err)
 	}
 
-	logrus.Debugf("routes synchronized, event: %s", srcDescription)
+	slog.Debug("routes synchronized", "source", srcDescription)
 }
 
 func (m Manager) handleRouteRemoveEvent(info domain.RoutingTableInfo) {
-	logrus.Debugf("handling route remove event for: %s", info.String())
+	slog.Debug("handling route remove event", "info", info.String())
 
 	if !info.ManagementEnabled() {
 		return // route management disabled
 	}
 
 	if err := m.removeFwMarkRules(info.FwMark, info.GetRoutingTable(), netlink.FAMILY_V4); err != nil {
-		logrus.Errorf("failed to remove v4 fwmark rules: %v", err)
+		slog.Error("failed to remove v4 fwmark rules", "error", err)
 	}
 	if err := m.removeFwMarkRules(info.FwMark, info.GetRoutingTable(), netlink.FAMILY_V6); err != nil {
-		logrus.Errorf("failed to remove v6 fwmark rules: %v", err)
+		slog.Error("failed to remove v6 fwmark rules", "error", err)
 	}
 
-	logrus.Debugf("routes removed, table: %s", info.String())
+	slog.Debug("routes removed", "table", info.String())
 }
 
 func (m Manager) syncRoutes(ctx context.Context) error {
@@ -123,7 +145,7 @@ func (m Manager) syncRoutes(ctx context.Context) error {
 			return fmt.Errorf("failed to find physical link for %s: %w", iface.Identifier, err)
 		}
 
-		table, fwmark, err := m.getRoutingTableAndFwMark(&iface, allowedIPs, link)
+		table, fwmark, err := m.getRoutingTableAndFwMark(&iface, link)
 		if err != nil {
 			return fmt.Errorf("failed to get table and fwmark for %s: %w", iface.Identifier, err)
 		}
@@ -425,25 +447,29 @@ func (m Manager) removeDeprecatedRoutes(link netlink.Link, family int, allowedIP
 	return nil
 }
 
-func (m Manager) getRoutingTableAndFwMark(
-	iface *domain.Interface,
-	allowedIPs []domain.Cidr,
-	link netlink.Link,
-) (table int, fwmark uint32, err error) {
+func (m Manager) getRoutingTableAndFwMark(iface *domain.Interface, link netlink.Link) (
+	table int,
+	fwmark uint32,
+	err error,
+) {
 	table = iface.GetRoutingTable()
 	fwmark = iface.FirewallMark
 
 	if fwmark == 0 {
 		// generate a new (temporary) firewall mark based on the interface index
 		fwmark = uint32(m.cfg.Advanced.RouteTableOffset + link.Attrs().Index)
-		logrus.Debugf("%s: using fwmark %d to handle routes", iface.Identifier, table)
+		slog.Debug("using fwmark to handle routes",
+			"interface", iface.Identifier,
+			"fwmark", fwmark)
 
 		// apply the temporary fwmark to the wireguard interface
 		err = m.setFwMark(iface.Identifier, int(fwmark))
 	}
 	if table == 0 {
 		table = int(fwmark) // generate a new routing table base on interface index
-		logrus.Debugf("%s: using routing table %d to handle default routes", iface.Identifier, table)
+		slog.Debug("using routing table to handle default routes",
+			"interface", iface.Identifier,
+			"table", table)
 	}
 	return
 }

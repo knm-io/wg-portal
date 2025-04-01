@@ -3,17 +3,18 @@ package app
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
+
+	"gorm.io/gorm"
 
 	"github.com/h44z/wg-portal/internal/adapters"
 	"github.com/h44z/wg-portal/internal/config"
 	"github.com/h44z/wg-portal/internal/domain"
-	"github.com/sirupsen/logrus"
-	"gorm.io/gorm"
 )
 
-func migrateFromV1(cfg *config.Config, db *gorm.DB, source, typ string) error {
+func migrateFromV1(db *gorm.DB, source, typ string) error {
 	sourceType := config.SupportedDatabase(typ)
 	switch sourceType {
 	case config.DatabaseMySQL, config.DatabasePostgres, config.DatabaseMsSQL:
@@ -49,7 +50,7 @@ func migrateFromV1(cfg *config.Config, db *gorm.DB, source, typ string) error {
 		return fmt.Errorf("unsupported old version, update to database version %s first: %w", latestVersion, err)
 	}
 
-	logrus.Infof("Found valid V1 database with version: %s", lastVersion.Version)
+	slog.Info("found valid V1 database", "version", lastVersion.Version)
 
 	if err := migrateV1Users(oldDb, db); err != nil {
 		return fmt.Errorf("user migration failed: %w", err)
@@ -63,7 +64,8 @@ func migrateFromV1(cfg *config.Config, db *gorm.DB, source, typ string) error {
 		return fmt.Errorf("peer migration failed: %w", err)
 	}
 
-	logrus.Infof("Migrated V1 database with version %s, please restart WireGuard Portal", lastVersion.Version)
+	slog.Info("migrated V1 database successfully, please restart WireGuard Portal",
+		"version", lastVersion.Version)
 
 	return nil
 }
@@ -125,7 +127,7 @@ func migrateV1Users(oldDb, newDb *gorm.DB) error {
 			return fmt.Errorf("failed to migrate user %s: %w", oldUser.Email, err)
 		}
 
-		logrus.Debugf(" - User %s migrated", newUser.Identifier)
+		slog.Debug("user migrated successfully", "identifier", newUser.Identifier)
 	}
 
 	return nil
@@ -219,7 +221,7 @@ func migrateV1Interfaces(oldDb, newDb *gorm.DB) error {
 			return fmt.Errorf("failed to migrate device %s: %w", oldDevice.DeviceName, err)
 		}
 
-		logrus.Debugf(" - Interface %s migrated", newInterface.Identifier)
+		slog.Debug("interface migrated successfully", "identifier", newInterface.Identifier)
 	}
 
 	return nil
@@ -318,7 +320,7 @@ func migrateV1Peers(oldDb, newDb *gorm.DB) error {
 				return fmt.Errorf("failed to migrate dummy user %s: %w", oldPeer.Email, err)
 			}
 
-			logrus.Debugf(" - Dummy User %s migrated", user.Identifier)
+			slog.Debug("dummy user migrated successfully", "identifier", user.Identifier)
 		}
 		newPeer := domain.Peer{
 			BaseModel: domain.BaseModel{
@@ -364,7 +366,7 @@ func migrateV1Peers(oldDb, newDb *gorm.DB) error {
 			return fmt.Errorf("failed to migrate peer %s (%s): %w", oldPeer.Identifier, oldPeer.PublicKey, err)
 		}
 
-		logrus.Debugf(" - Peer %s migrated", newPeer.Identifier)
+		slog.Debug("peer migrated successfully", "identifier", newPeer.Identifier)
 	}
 
 	return nil

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"net"
 	"regexp"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	"github.com/h44z/wg-portal/internal"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -18,6 +18,8 @@ const (
 	InterfaceTypeClient InterfaceType = "client"
 	InterfaceTypeAny    InterfaceType = "any"
 )
+
+var allowedFileNameRegex = regexp.MustCompile("[^a-zA-Z0-9-_]+")
 
 type InterfaceIdentifier string
 type InterfaceType string
@@ -119,10 +121,8 @@ func (i *Interface) CopyCalculatedAttributes(src *Interface) {
 }
 
 func (i *Interface) GetConfigFileName() string {
-	reg := regexp.MustCompile("[^a-zA-Z0-9-_]+")
-
 	filename := internal.TruncateString(string(i.Identifier), 8)
-	filename = reg.ReplaceAllString(filename, "")
+	filename = allowedFileNameRegex.ReplaceAllString(filename, "")
 	filename += ".conf"
 
 	return filename
@@ -165,18 +165,22 @@ func (i *Interface) GetRoutingTable() int {
 		numberStr := strings.ReplaceAll(routingTableStr, "0x", "")
 		routingTable, err := strconv.ParseUint(numberStr, 16, 64)
 		if err != nil {
-			logrus.Errorf("invalid hex routing table %s: %v", routingTableStr, err)
+			slog.Error("failed to parse routing table number", "table", routingTableStr, "error", err)
 			return -1
 		}
 		if routingTable > math.MaxInt32 {
-			logrus.Errorf("invalid routing table %s, too big", routingTableStr)
+			slog.Error("routing table number too large", "table", routingTable, "max", math.MaxInt32)
 			return -1
 		}
 		return int(routingTable)
 	default:
 		routingTable, err := strconv.Atoi(routingTableStr)
 		if err != nil {
-			logrus.Errorf("invalid routing table %s: %v", routingTableStr, err)
+			slog.Error("failed to parse routing table number", "table", routingTableStr, "error", err)
+			return -1
+		}
+		if routingTable > math.MaxInt32 {
+			slog.Error("routing table number too large", "table", routingTable, "max", math.MaxInt32)
 			return -1
 		}
 		return routingTable

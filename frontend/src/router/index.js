@@ -4,6 +4,7 @@ import LoginView from '../views/LoginView.vue'
 import InterfaceView from '../views/InterfaceView.vue'
 
 import {authStore} from '@/stores/auth'
+import {securityStore} from '@/stores/security'
 import {notify} from "@kyvg/vue3-notification";
 
 const router = createRouter({
@@ -55,6 +56,14 @@ const router = createRouter({
       // this generates a separate chunk (About.[hash].js) for this route
       // which is lazy-loaded when the route is visited.
       component: () => import('../views/SettingsView.vue')
+    },
+    {
+      path: '/audit',
+      name: 'audit',
+      // route level code-splitting
+      // this generates a separate chunk (About.[hash].js) for this route
+      // which is lazy-loaded when the route is visited.
+      component: () => import('../views/AuditView.vue')
     }
   ],
   linkActiveClass: "active",
@@ -111,6 +120,15 @@ router.beforeEach(async (to) => {
   if (authRequired && !auth.IsAuthenticated) {
     auth.SetReturnUrl(to.fullPath) // store original destination before starting the auth process
     return '/login'
+  }
+})
+
+router.afterEach(async (to, from) => {
+  const sec = securityStore()
+  const csrfPages = ['/', '/login']
+
+  if (csrfPages.includes(to.path)) {
+    await sec.LoadSecurityProperties() // make sure we have a valid csrf token
   }
 })
 

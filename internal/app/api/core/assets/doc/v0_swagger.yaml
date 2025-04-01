@@ -1,5 +1,21 @@
 basePath: /api/v0
 definitions:
+  model.AuditEntry:
+    properties:
+      ContextUser:
+        type: string
+      Id:
+        type: integer
+      Message:
+        type: string
+      Origin:
+        description: 'origin: for example user auth, stats, ...'
+        type: string
+      Severity:
+        type: string
+      Timestamp:
+        type: string
+    type: object
   model.ConfigOption-array_string:
     properties:
       Overridable:
@@ -419,6 +435,21 @@ info:
   title: WireGuard Portal SPA-UI API
   version: "0.0"
 paths:
+  /audit/entries:
+    get:
+      operationId: audit_handleEntriesGet
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/model.AuditEntry'
+            type: array
+      summary: Get all available audit entries. Ordered by timestamp.
+      tags:
+      - Audit
   /auth/{provider}/callback:
     get:
       operationId: auth_handleOauthCallbackGet
@@ -465,17 +496,15 @@ paths:
       tags:
       - Authentication
   /auth/logout:
-    get:
-      operationId: auth_handleLogoutGet
+    post:
+      operationId: auth_handleLogoutPost
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            items:
-              $ref: '#/definitions/model.LoginProviderInfo'
-            type: array
+            $ref: '#/definitions/model.Error'
       summary: Get all available external login providers.
       tags:
       - Authentication
@@ -523,6 +552,8 @@ paths:
           description: The JavaScript contents
           schema:
             type: string
+        "500":
+          description: Internal Server Error
       summary: Get the dynamic frontend configuration javascript.
       tags:
       - Configuration

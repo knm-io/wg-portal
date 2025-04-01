@@ -4,15 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
+	"slices"
 	"time"
 
-	"github.com/h44z/wg-portal/internal"
 	"github.com/h44z/wg-portal/internal/app"
+	"github.com/h44z/wg-portal/internal/app/audit"
 	"github.com/h44z/wg-portal/internal/domain"
-	"github.com/sirupsen/logrus"
 )
 
+// GetImportableInterfaces returns all physical interfaces that are available on the system.
+// This function also returns interfaces that are already available in the database.
 func (m Manager) GetImportableInterfaces(ctx context.Context) ([]domain.PhysicalInterface, error) {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return nil, err
@@ -26,6 +29,7 @@ func (m Manager) GetImportableInterfaces(ctx context.Context) ([]domain.Physical
 	return physicalInterfaces, nil
 }
 
+// GetInterfaceAndPeers returns the interface and all peers for the given interface identifier.
 func (m Manager) GetInterfaceAndPeers(ctx context.Context, id domain.InterfaceIdentifier) (
 	*domain.Interface,
 	[]domain.Peer,
@@ -38,6 +42,7 @@ func (m Manager) GetInterfaceAndPeers(ctx context.Context, id domain.InterfaceId
 	return m.db.GetInterfaceAndPeers(ctx, id)
 }
 
+// GetAllInterfaces returns all interfaces that are available in the database.
 func (m Manager) GetAllInterfaces(ctx context.Context) ([]domain.Interface, error) {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return nil, err
@@ -46,6 +51,7 @@ func (m Manager) GetAllInterfaces(ctx context.Context) ([]domain.Interface, erro
 	return m.db.GetAllInterfaces(ctx)
 }
 
+// GetAllInterfacesAndPeers returns all interfaces and their peers.
 func (m Manager) GetAllInterfacesAndPeers(ctx context.Context) ([]domain.Interface, [][]domain.Peer, error) {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return nil, nil, err
@@ -70,7 +76,8 @@ func (m Manager) GetAllInterfacesAndPeers(ctx context.Context) ([]domain.Interfa
 
 // GetUserInterfaces returns all interfaces that are available for users to create new peers.
 // If self-provisioning is disabled, this function will return an empty list.
-func (m Manager) GetUserInterfaces(ctx context.Context, id domain.UserIdentifier) ([]domain.Interface, error) {
+// At the moment, there are no interfaces specific to single users, thus the user id is not used.
+func (m Manager) GetUserInterfaces(ctx context.Context, _ domain.UserIdentifier) ([]domain.Interface, error) {
 	if !m.cfg.Core.SelfProvisioningAllowed {
 		return nil, nil // self-provisioning is disabled - no interfaces for users
 	}
@@ -96,6 +103,7 @@ func (m Manager) GetUserInterfaces(ctx context.Context, id domain.UserIdentifier
 	return userInterfaces, nil
 }
 
+// ImportNewInterfaces imports all new physical interfaces that are available on the system.
 func (m Manager) ImportNewInterfaces(ctx context.Context, filter ...domain.InterfaceIdentifier) (int, error) {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return 0, err
@@ -120,15 +128,15 @@ func (m Manager) ImportNewInterfaces(ctx context.Context, filter ...domain.Inter
 
 	imported := 0
 	for _, physicalInterface := range physicalInterfaces {
-		if internal.SliceContains(excludedInterfaces, physicalInterface.Identifier) {
+		if slices.Contains(excludedInterfaces, physicalInterface.Identifier) {
 			continue
 		}
 
-		if len(filter) != 0 && !internal.SliceContains(filter, physicalInterface.Identifier) {
+		if len(filter) != 0 && !slices.Contains(filter, physicalInterface.Identifier) {
 			continue
 		}
 
-		logrus.Infof("importing new interface %s...", physicalInterface.Identifier)
+		slog.Info("importing new interface", "interface", physicalInterface.Identifier)
 
 		physicalPeers, err := m.wg.GetPeers(ctx, physicalInterface.Identifier)
 		if err != nil {
@@ -140,13 +148,14 @@ func (m Manager) ImportNewInterfaces(ctx context.Context, filter ...domain.Inter
 			return 0, fmt.Errorf("import of %s failed: %w", physicalInterface.Identifier, err)
 		}
 
-		logrus.Infof("imported new interface %s and %d peers", physicalInterface.Identifier, len(physicalPeers))
+		slog.Info("imported new interface", "interface", physicalInterface.Identifier, "peers", len(physicalPeers))
 		imported++
 	}
 
 	return imported, nil
 }
 
+// ApplyPeerDefaults applies the interface defaults to all peers of the given interface.
 func (m Manager) ApplyPeerDefaults(ctx context.Context, in *domain.Interface) error {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return err
@@ -178,6 +187,8 @@ func (m Manager) ApplyPeerDefaults(ctx context.Context, in *domain.Interface) er
 	return nil
 }
 
+// RestoreInterfaceState restores the state of all physical interfaces and their peers.
+// The final state of the interfaces and peers will be the same as stored in the database.
 func (m Manager) RestoreInterfaceState(
 	ctx context.Context,
 	updateDbOnError bool,
@@ -193,7 +204,7 @@ func (m Manager) RestoreInterfaceState(
 	}
 
 	for _, iface := range interfaces {
-		if len(filter) != 0 && !internal.SliceContains(filter, iface.Identifier) {
+		if len(filter) != 0 && !slices.Contains(filter, iface.Identifier) {
 			continue // ignore filtered interface
 		}
 
@@ -204,7 +215,7 @@ func (m Manager) RestoreInterfaceState(
 
 		_, err = m.wg.GetInterface(ctx, iface.Identifier)
 		if err != nil && !iface.IsDisabled() {
-			logrus.Debugf("creating missing interface %s...", iface.Identifier)
+			slog.Debug("creating missing interface", "interface", iface.Identifier)
 
 			// try to create a new interface
 			_, err = m.saveInterface(ctx, &iface)
@@ -222,7 +233,7 @@ func (m Manager) RestoreInterfaceState(
 				return fmt.Errorf("failed to create physical interface %s: %w", iface.Identifier, err)
 			}
 		} else {
-			logrus.Debugf("restoring interface state for %s to disabled=%t", iface.Identifier, iface.IsDisabled())
+			slog.Debug("restoring interface state", "interface", iface.Identifier, "disabled", iface.IsDisabled())
 
 			// try to move interface to stored state
 			_, err = m.saveInterface(ctx, &iface)
@@ -295,6 +306,7 @@ func (m Manager) RestoreInterfaceState(
 	return nil
 }
 
+// PrepareInterface generates a new interface with fresh keys, ip addresses and a listen port.
 func (m Manager) PrepareInterface(ctx context.Context) (*domain.Interface, error) {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return nil, err
@@ -375,6 +387,7 @@ func (m Manager) PrepareInterface(ctx context.Context) (*domain.Interface, error
 	return freshInterface, nil
 }
 
+// CreateInterface creates a new interface with the given configuration.
 func (m Manager) CreateInterface(ctx context.Context, in *domain.Interface) (*domain.Interface, error) {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return nil, err
@@ -400,6 +413,7 @@ func (m Manager) CreateInterface(ctx context.Context, in *domain.Interface) (*do
 	return in, nil
 }
 
+// UpdateInterface updates the given interface with the new configuration.
 func (m Manager) UpdateInterface(ctx context.Context, in *domain.Interface) (*domain.Interface, []domain.Peer, error) {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return nil, nil, err
@@ -422,6 +436,7 @@ func (m Manager) UpdateInterface(ctx context.Context, in *domain.Interface) (*do
 	return in, existingPeers, nil
 }
 
+// DeleteInterface deletes the given interface.
 func (m Manager) DeleteInterface(ctx context.Context, id domain.InterfaceIdentifier) error {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return err
@@ -535,6 +550,13 @@ func (m Manager) saveInterface(ctx context.Context, iface *domain.Interface) (
 	}
 
 	m.bus.Publish(app.TopicInterfaceUpdated, iface)
+	m.bus.Publish(app.TopicAuditInterfaceChanged, domain.AuditEventWrapper[audit.InterfaceEvent]{
+		Ctx: ctx,
+		Event: audit.InterfaceEvent{
+			Interface: *iface,
+			Action:    "save",
+		},
+	})
 
 	return iface, nil
 }
@@ -836,7 +858,7 @@ func (m Manager) deleteInterfacePeers(ctx context.Context, id domain.InterfaceId
 	return nil
 }
 
-func (m Manager) validateInterfaceModifications(ctx context.Context, old, new *domain.Interface) error {
+func (m Manager) validateInterfaceModifications(ctx context.Context, _, _ *domain.Interface) error {
 	currentUser := domain.GetUserInfo(ctx)
 
 	if !currentUser.IsAdmin {
@@ -846,7 +868,7 @@ func (m Manager) validateInterfaceModifications(ctx context.Context, old, new *d
 	return nil
 }
 
-func (m Manager) validateInterfaceCreation(ctx context.Context, old, new *domain.Interface) error {
+func (m Manager) validateInterfaceCreation(ctx context.Context, _, new *domain.Interface) error {
 	currentUser := domain.GetUserInfo(ctx)
 
 	if new.Identifier == "" {
@@ -867,7 +889,7 @@ func (m Manager) validateInterfaceCreation(ctx context.Context, old, new *domain
 	return nil
 }
 
-func (m Manager) validateInterfaceDeletion(ctx context.Context, del *domain.Interface) error {
+func (m Manager) validateInterfaceDeletion(ctx context.Context, _ *domain.Interface) error {
 	currentUser := domain.GetUserInfo(ctx)
 
 	if !currentUser.IsAdmin {

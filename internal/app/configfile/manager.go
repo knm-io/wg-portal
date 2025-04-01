@@ -6,31 +6,68 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
+
+	"github.com/yeqown/go-qrcode/v2"
+	"github.com/yeqown/go-qrcode/writer/compressed"
 
 	"github.com/h44z/wg-portal/internal/app"
 	"github.com/h44z/wg-portal/internal/config"
 	"github.com/h44z/wg-portal/internal/domain"
-	"github.com/sirupsen/logrus"
-	evbus "github.com/vardius/message-bus"
-	"github.com/yeqown/go-qrcode/v2"
-	"github.com/yeqown/go-qrcode/writer/compressed"
 )
 
-type Manager struct {
-	cfg        *config.Config
-	bus        evbus.MessageBus
-	tplHandler *TemplateHandler
+// region dependencies
 
-	fsRepo FileSystemRepo
-	users  UserDatabaseRepo
-	wg     WireguardDatabaseRepo
+type UserDatabaseRepo interface {
+	// GetUser returns the user with the given identifier from the SQL database.
+	GetUser(ctx context.Context, id domain.UserIdentifier) (*domain.User, error)
 }
 
+type WireguardDatabaseRepo interface {
+	// GetInterfaceAndPeers returns the interface and all peers associated with it.
+	GetInterfaceAndPeers(ctx context.Context, id domain.InterfaceIdentifier) (*domain.Interface, []domain.Peer, error)
+	// GetPeer returns the peer with the given identifier.
+	GetPeer(ctx context.Context, id domain.PeerIdentifier) (*domain.Peer, error)
+	// GetInterface returns the interface with the given identifier.
+	GetInterface(ctx context.Context, id domain.InterfaceIdentifier) (*domain.Interface, error)
+}
+
+type FileSystemRepo interface {
+	// WriteFile writes the contents to the file at the given path.
+	WriteFile(path string, contents io.Reader) error
+}
+
+type TemplateRenderer interface {
+	// GetInterfaceConfig returns the configuration file for the given interface.
+	GetInterfaceConfig(iface *domain.Interface, peers []domain.Peer) (io.Reader, error)
+	// GetPeerConfig returns the configuration file for the given peer.
+	GetPeerConfig(peer *domain.Peer) (io.Reader, error)
+}
+
+type EventBus interface {
+	// Subscribe subscribes to the given topic.
+	Subscribe(topic string, fn any) error
+}
+
+// endregion dependencies
+
+// Manager is responsible for managing the configuration files of the WireGuard interfaces and peers.
+type Manager struct {
+	cfg *config.Config
+	bus EventBus
+
+	tplHandler TemplateRenderer
+	fsRepo     FileSystemRepo
+	users      UserDatabaseRepo
+	wg         WireguardDatabaseRepo
+}
+
+// NewConfigFileManager creates a new Manager instance.
 func NewConfigFileManager(
 	cfg *config.Config,
-	bus evbus.MessageBus,
+	bus EventBus,
 	users UserDatabaseRepo,
 	wg WireguardDatabaseRepo,
 	fsRepo FileSystemRepo,
@@ -81,18 +118,22 @@ func (m Manager) handleInterfaceUpdatedEvent(iface *domain.Interface) {
 		return
 	}
 
-	logrus.Debugf("handling interface updated event for %s", iface.Identifier)
+	slog.Debug("handling interface updated event", "interface", iface.Identifier)
 
 	err := m.PersistInterfaceConfig(context.Background(), iface.Identifier)
 	if err != nil {
-		logrus.Errorf("failed to automatically persist interface config for %s: %v", iface.Identifier, err)
+		slog.Error("failed to automatically persist interface config",
+			"interface", iface.Identifier,
+			"error", err)
 	}
 }
 
 func (m Manager) handlePeerInterfaceUpdatedEvent(id domain.InterfaceIdentifier) {
 	peerInterface, err := m.wg.GetInterface(context.Background(), id)
 	if err != nil {
-		logrus.Errorf("failed to load interface %s: %v", id, err)
+		slog.Error("failed to load interface",
+			"interface", id,
+			"error", err)
 		return
 	}
 
@@ -100,14 +141,18 @@ func (m Manager) handlePeerInterfaceUpdatedEvent(id domain.InterfaceIdentifier) 
 		return
 	}
 
-	logrus.Debugf("handling peer interface updated event for %s", id)
+	slog.Debug("handling peer interface updated event", "interface", id)
 
 	err = m.PersistInterfaceConfig(context.Background(), peerInterface.Identifier)
 	if err != nil {
-		logrus.Errorf("failed to automatically persist interface config for %s: %v", peerInterface.Identifier, err)
+		slog.Error("failed to automatically persist interface config",
+			"interface", peerInterface.Identifier,
+			"error", err)
 	}
 }
 
+// GetInterfaceConfig returns the configuration file for the given interface.
+// The file is structured in wg-quick format.
 func (m Manager) GetInterfaceConfig(ctx context.Context, id domain.InterfaceIdentifier) (io.Reader, error) {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return nil, err
@@ -121,6 +166,8 @@ func (m Manager) GetInterfaceConfig(ctx context.Context, id domain.InterfaceIden
 	return m.tplHandler.GetInterfaceConfig(iface, peers)
 }
 
+// GetPeerConfig returns the configuration file for the given peer.
+// The file is structured in wg-quick format.
 func (m Manager) GetPeerConfig(ctx context.Context, id domain.PeerIdentifier) (io.Reader, error) {
 	peer, err := m.wg.GetPeer(ctx, id)
 	if err != nil {
@@ -134,6 +181,7 @@ func (m Manager) GetPeerConfig(ctx context.Context, id domain.PeerIdentifier) (i
 	return m.tplHandler.GetPeerConfig(peer)
 }
 
+// GetPeerConfigQrCode returns a QR code image containing the configuration for the given peer.
 func (m Manager) GetPeerConfigQrCode(ctx context.Context, id domain.PeerIdentifier) (io.Reader, error) {
 	peer, err := m.wg.GetPeer(ctx, id)
 	if err != nil {
@@ -184,6 +232,7 @@ func (m Manager) GetPeerConfigQrCode(ctx context.Context, id domain.PeerIdentifi
 	return buf, nil
 }
 
+// PersistInterfaceConfig writes the configuration file for the given interface to the file system.
 func (m Manager) PersistInterfaceConfig(ctx context.Context, id domain.InterfaceIdentifier) error {
 	iface, peers, err := m.wg.GetInterfaceAndPeers(ctx, id)
 	if err != nil {
@@ -206,4 +255,5 @@ type nopCloser struct {
 	io.Writer
 }
 
+// Close is a no-op for the nopCloser.
 func (nopCloser) Close() error { return nil }

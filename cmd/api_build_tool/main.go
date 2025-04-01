@@ -9,7 +9,7 @@ import (
 
 	"github.com/swaggo/swag"
 	"github.com/swaggo/swag/gen"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 var apiRootPath = "/internal/app/api"
@@ -100,7 +100,7 @@ func copyDocForMkdocs(workingDir, basePath, version string) error {
 }
 
 func removeAuthorizeButton(input []byte) ([]byte, error) {
-	var swagger map[string]interface{}
+	var swagger map[string]any
 	err := yaml.Unmarshal(input, &swagger)
 	if err != nil {
 		return nil, fmt.Errorf("error while unmarshalling swagger file: %w", err)

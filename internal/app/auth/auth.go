@@ -7,31 +7,86 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
+
 	"github.com/h44z/wg-portal/internal/app"
+	"github.com/h44z/wg-portal/internal/app/audit"
 	"github.com/h44z/wg-portal/internal/config"
 	"github.com/h44z/wg-portal/internal/domain"
-	"github.com/sirupsen/logrus"
-	evbus "github.com/vardius/message-bus"
 )
 
+// region dependencies
+
 type UserManager interface {
+	// GetUser returns a user by its identifier.
 	GetUser(context.Context, domain.UserIdentifier) (*domain.User, error)
+	// RegisterUser creates a new user in the database.
 	RegisterUser(ctx context.Context, user *domain.User) error
+	// UpdateUser updates an existing user in the database.
 	UpdateUser(ctx context.Context, user *domain.User) (*domain.User, error)
 }
 
+type EventBus interface {
+	// Publish sends a message to the message bus.
+	Publish(topic string, args ...any)
+}
+
+// endregion dependencies
+
+type AuthenticatorType string
+
+const (
+	AuthenticatorTypeOAuth AuthenticatorType = "oauth"
+	AuthenticatorTypeOidc  AuthenticatorType = "oidc"
+)
+
+// AuthenticatorOauth is the interface for all OAuth authenticators.
+type AuthenticatorOauth interface {
+	// GetName returns the name of the authenticator.
+	GetName() string
+	// GetType returns the type of the authenticator. It can be either AuthenticatorTypeOAuth or AuthenticatorTypeOidc.
+	GetType() AuthenticatorType
+	// AuthCodeURL returns the URL for the authentication flow.
+	AuthCodeURL(state string, opts ...oauth2.AuthCodeOption) string
+	// Exchange exchanges the OAuth code for an access token.
+	Exchange(ctx context.Context, code string, opts ...oauth2.AuthCodeOption) (*oauth2.Token, error)
+	// GetUserInfo fetches the user information from the OAuth or OIDC provider.
+	GetUserInfo(ctx context.Context, token *oauth2.Token, nonce string) (map[string]any, error)
+	// ParseUserInfo parses the raw user information into a domain.AuthenticatorUserInfo struct.
+	ParseUserInfo(raw map[string]any) (*domain.AuthenticatorUserInfo, error)
+	// RegistrationEnabled returns whether registration is enabled for the OAuth authenticator.
+	RegistrationEnabled() bool
+}
+
+// AuthenticatorLdap is the interface for all LDAP authenticators.
+type AuthenticatorLdap interface {
+	// GetName returns the name of the authenticator.
+	GetName() string
+	// PlaintextAuthentication performs a plaintext authentication against the LDAP server.
+	PlaintextAuthentication(userId domain.UserIdentifier, plainPassword string) error
+	// GetUserInfo fetches the user information from the LDAP server.
+	GetUserInfo(ctx context.Context, username domain.UserIdentifier) (map[string]any, error)
+	// ParseUserInfo parses the raw user information into a domain.AuthenticatorUserInfo struct.
+	ParseUserInfo(raw map[string]any) (*domain.AuthenticatorUserInfo, error)
+	// RegistrationEnabled returns whether registration is enabled for the LDAP authenticator.
+	RegistrationEnabled() bool
+}
+
+// Authenticator is the main entry point for all authentication related tasks.
+// This includes password authentication and external authentication providers (OIDC, OAuth, LDAP).
 type Authenticator struct {
 	cfg *config.Auth
-	bus evbus.MessageBus
+	bus EventBus
 
-	oauthAuthenticators map[string]domain.OauthAuthenticator
-	ldapAuthenticators  map[string]domain.LdapAuthenticator
+	oauthAuthenticators map[string]AuthenticatorOauth
+	ldapAuthenticators  map[string]AuthenticatorLdap
 
 	// URL prefix for the callback endpoints, this is a combination of the external URL and the API prefix
 	callbackUrlPrefix string
@@ -39,7 +94,8 @@ type Authenticator struct {
 	users UserManager
 }
 
-func NewAuthenticator(cfg *config.Auth, extUrl string, bus evbus.MessageBus, users UserManager) (
+// NewAuthenticator creates a new Authenticator instance.
+func NewAuthenticator(cfg *config.Auth, extUrl string, bus EventBus, users UserManager) (
 	*Authenticator,
 	error,
 ) {
@@ -67,8 +123,8 @@ func (a *Authenticator) setupExternalAuthProviders(ctx context.Context) error {
 		return fmt.Errorf("failed to parse external url: %w", err)
 	}
 
-	a.oauthAuthenticators = make(map[string]domain.OauthAuthenticator, len(a.cfg.OpenIDConnect)+len(a.cfg.OAuth))
-	a.ldapAuthenticators = make(map[string]domain.LdapAuthenticator, len(a.cfg.Ldap))
+	a.oauthAuthenticators = make(map[string]AuthenticatorOauth, len(a.cfg.OpenIDConnect)+len(a.cfg.OAuth))
+	a.ldapAuthenticators = make(map[string]AuthenticatorLdap, len(a.cfg.Ldap))
 
 	for i := range a.cfg.OpenIDConnect { // OIDC
 		providerCfg := &a.cfg.OpenIDConnect[i]
@@ -122,6 +178,7 @@ func (a *Authenticator) setupExternalAuthProviders(ctx context.Context) error {
 	return nil
 }
 
+// GetExternalLoginProviders returns a list of all available external login providers.
 func (a *Authenticator) GetExternalLoginProviders(_ context.Context) []domain.LoginProviderInfo {
 	authProviders := make([]domain.LoginProviderInfo, 0, len(a.cfg.OAuth)+len(a.cfg.OpenIDConnect))
 
@@ -156,6 +213,7 @@ func (a *Authenticator) GetExternalLoginProviders(_ context.Context) []domain.Lo
 	return authProviders
 }
 
+// IsUserValid checks if a user is valid and not locked or disabled.
 func (a *Authenticator) IsUserValid(ctx context.Context, id domain.UserIdentifier) bool {
 	ctx = domain.SetUserInfo(ctx, domain.SystemAdminContextUserInfo()) // switch to admin user context
 	user, err := a.users.GetUser(ctx, id)
@@ -176,6 +234,8 @@ func (a *Authenticator) IsUserValid(ctx context.Context, id domain.UserIdentifie
 
 // region password authentication
 
+// PlainLogin performs a password authentication for a user. The username and password are trimmed before usage.
+// If the login is successful, the user is returned, otherwise an error.
 func (a *Authenticator) PlainLogin(ctx context.Context, username, password string) (*domain.User, error) {
 	// Validate form input
 	username = strings.TrimSpace(username)
@@ -186,10 +246,24 @@ func (a *Authenticator) PlainLogin(ctx context.Context, username, password strin
 
 	user, err := a.passwordAuthentication(ctx, domain.UserIdentifier(username), password)
 	if err != nil {
+		a.bus.Publish(app.TopicAuditLoginFailed, domain.AuditEventWrapper[audit.AuthEvent]{
+			Ctx:    ctx,
+			Source: "plain",
+			Event: audit.AuthEvent{
+				Username: username, Error: err.Error(),
+			},
+		})
 		return nil, fmt.Errorf("login failed: %w", err)
 	}
 
 	a.bus.Publish(app.TopicAuthLogin, user.Identifier)
+	a.bus.Publish(app.TopicAuditLoginSuccess, domain.AuditEventWrapper[audit.AuthEvent]{
+		Ctx:    ctx,
+		Source: "plain",
+		Event: audit.AuthEvent{
+			Username: string(user.Identifier),
+		},
+	})
 
 	return user, nil
 }
@@ -203,7 +277,7 @@ func (a *Authenticator) passwordAuthentication(
 		domain.SystemAdminContextUserInfo()) // switch to admin user context to check if user exists
 
 	var ldapUserInfo *domain.AuthenticatorUserInfo
-	var ldapProvider domain.LdapAuthenticator
+	var ldapProvider AuthenticatorLdap
 
 	var userInDatabase = false
 	var userSource domain.UserSource
@@ -226,7 +300,7 @@ func (a *Authenticator) passwordAuthentication(
 			rawUserInfo, err := ldapAuth.GetUserInfo(context.Background(), identifier)
 			if err != nil {
 				if !errors.Is(err, domain.ErrNotFound) {
-					logrus.Warnf("failed to fetch ldap user info for %s: %v", identifier, err)
+					slog.Warn("failed to fetch ldap user info", "identifier", identifier, "error", err)
 				}
 				continue // user not found / other ldap error
 			}
@@ -279,6 +353,7 @@ func (a *Authenticator) passwordAuthentication(
 
 // region oauth authentication
 
+// OauthLoginStep1 starts the oauth authentication flow by returning the authentication URL, state and nonce.
 func (a *Authenticator) OauthLoginStep1(_ context.Context, providerId string) (
 	authCodeUrl, state, nonce string,
 	err error,
@@ -295,9 +370,9 @@ func (a *Authenticator) OauthLoginStep1(_ context.Context, providerId string) (
 	}
 
 	switch oauthProvider.GetType() {
-	case domain.AuthenticatorTypeOAuth:
+	case AuthenticatorTypeOAuth:
 		authCodeUrl = oauthProvider.AuthCodeURL(state)
-	case domain.AuthenticatorTypeOidc:
+	case AuthenticatorTypeOidc:
 		nonce, err = a.randString(16)
 		if err != nil {
 			return "", "", "", fmt.Errorf("failed to generate nonce: %w", err)
@@ -317,6 +392,8 @@ func (a *Authenticator) randString(nByte int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// OauthLoginStep2 finishes the oauth authentication flow by exchanging the code for an access token and
+// fetching the user information.
 func (a *Authenticator) OauthLoginStep2(ctx context.Context, providerId, nonce, code string) (*domain.User, error) {
 	oauthProvider, ok := a.oauthAuthenticators[providerId]
 	if !ok {
@@ -343,14 +420,37 @@ func (a *Authenticator) OauthLoginStep2(ctx context.Context, providerId, nonce, 
 	user, err := a.processUserInfo(ctx, userInfo, domain.UserSourceOauth, oauthProvider.GetName(),
 		oauthProvider.RegistrationEnabled())
 	if err != nil {
+		a.bus.Publish(app.TopicAuditLoginFailed, domain.AuditEventWrapper[audit.AuthEvent]{
+			Ctx:    ctx,
+			Source: "oauth " + providerId,
+			Event: audit.AuthEvent{
+				Username: string(userInfo.Identifier),
+				Error:    err.Error(),
+			},
+		})
 		return nil, fmt.Errorf("unable to process user information: %w", err)
 	}
 
 	if user.IsLocked() || user.IsDisabled() {
+		a.bus.Publish(app.TopicAuditLoginFailed, domain.AuditEventWrapper[audit.AuthEvent]{
+			Ctx:    ctx,
+			Source: "oauth " + providerId,
+			Event: audit.AuthEvent{
+				Username: string(user.Identifier),
+				Error:    "user is locked",
+			},
+		})
 		return nil, errors.New("user is locked")
 	}
 
 	a.bus.Publish(app.TopicAuthLogin, user.Identifier)
+	a.bus.Publish(app.TopicAuditLoginSuccess, domain.AuditEventWrapper[audit.AuthEvent]{
+		Ctx:    ctx,
+		Source: "oauth " + providerId,
+		Event: audit.AuthEvent{
+			Username: string(user.Identifier),
+		},
+	})
 
 	return user, nil
 }
@@ -406,13 +506,15 @@ func (a *Authenticator) registerNewUser(
 		return nil, fmt.Errorf("failed to register new user: %w", err)
 	}
 
-	logrus.Tracef("registered user %s from external authentication provider, admin user: %t",
-		user.Identifier, user.IsAdmin)
+	slog.Debug("registered user from external authentication provider",
+		"user", user.Identifier,
+		"isAdmin", user.IsAdmin,
+		"provider", source)
 
 	return user, nil
 }
 
-func (a *Authenticator) getAuthenticatorConfig(id string) (interface{}, error) {
+func (a *Authenticator) getAuthenticatorConfig(id string) (any, error) {
 	for i := range a.cfg.OpenIDConnect {
 		if a.cfg.OpenIDConnect[i].ProviderName == id {
 			return a.cfg.OpenIDConnect[i], nil
@@ -482,8 +584,10 @@ func (a *Authenticator) updateExternalUser(
 		return fmt.Errorf("failed to update user: %w", err)
 	}
 
-	logrus.Tracef("updated user %s with data from external authentication provider, admin user: %t",
-		existingUser.Identifier, existingUser.IsAdmin)
+	slog.Debug("updated user with data from external authentication provider",
+		"user", existingUser.Identifier,
+		"isAdmin", existingUser.IsAdmin,
+		"provider", source)
 
 	return nil
 }

@@ -3,23 +3,74 @@ package mail
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
+
 	"github.com/h44z/wg-portal/internal/config"
 	"github.com/h44z/wg-portal/internal/domain"
-	"github.com/sirupsen/logrus"
-	"io"
 )
 
-type Manager struct {
-	cfg        *config.Config
-	tplHandler *TemplateHandler
+// region dependencies
 
+type Mailer interface {
+	// Send sends an email with the given subject and body to the given recipients.
+	Send(ctx context.Context, subject, body string, to []string, options *domain.MailOptions) error
+}
+
+type ConfigFileManager interface {
+	// GetInterfaceConfig returns the configuration for the given interface.
+	GetInterfaceConfig(ctx context.Context, id domain.InterfaceIdentifier) (io.Reader, error)
+	// GetPeerConfig returns the configuration for the given peer.
+	GetPeerConfig(ctx context.Context, id domain.PeerIdentifier) (io.Reader, error)
+	// GetPeerConfigQrCode returns the QR code for the given peer.
+	GetPeerConfigQrCode(ctx context.Context, id domain.PeerIdentifier) (io.Reader, error)
+}
+
+type UserDatabaseRepo interface {
+	// GetUser returns the user with the given identifier.
+	GetUser(ctx context.Context, id domain.UserIdentifier) (*domain.User, error)
+}
+
+type WireguardDatabaseRepo interface {
+	// GetInterfaceAndPeers returns the interface and all peers for the given interface identifier.
+	GetInterfaceAndPeers(ctx context.Context, id domain.InterfaceIdentifier) (*domain.Interface, []domain.Peer, error)
+	// GetPeer returns the peer with the given identifier.
+	GetPeer(ctx context.Context, id domain.PeerIdentifier) (*domain.Peer, error)
+	// GetInterface returns the interface with the given identifier.
+	GetInterface(ctx context.Context, id domain.InterfaceIdentifier) (*domain.Interface, error)
+}
+
+type TemplateRenderer interface {
+	// GetConfigMail returns the text and html template for the mail with a link.
+	GetConfigMail(user *domain.User, link string) (io.Reader, io.Reader, error)
+	// GetConfigMailWithAttachment returns the text and html template for the mail with an attachment.
+	GetConfigMailWithAttachment(user *domain.User, cfgName, qrName string) (
+		io.Reader,
+		io.Reader,
+		error,
+	)
+}
+
+// endregion dependencies
+
+type Manager struct {
+	cfg *config.Config
+
+	tplHandler  TemplateRenderer
 	mailer      Mailer
 	configFiles ConfigFileManager
 	users       UserDatabaseRepo
 	wg          WireguardDatabaseRepo
 }
 
-func NewMailManager(cfg *config.Config, mailer Mailer, configFiles ConfigFileManager, users UserDatabaseRepo, wg WireguardDatabaseRepo) (*Manager, error) {
+// NewMailManager creates a new mail manager.
+func NewMailManager(
+	cfg *config.Config,
+	mailer Mailer,
+	configFiles ConfigFileManager,
+	users UserDatabaseRepo,
+	wg WireguardDatabaseRepo,
+) (*Manager, error) {
 	tplHandler, err := newTemplateHandler(cfg.Web.ExternalUrl)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize template handler: %w", err)
@@ -37,6 +88,7 @@ func NewMailManager(cfg *config.Config, mailer Mailer, configFiles ConfigFileMan
 	return m, nil
 }
 
+// SendPeerEmail sends an email to the user linked to the given peers.
 func (m Manager) SendPeerEmail(ctx context.Context, linkOnly bool, peers ...domain.PeerIdentifier) error {
 	for _, peerId := range peers {
 		peer, err := m.wg.GetPeer(ctx, peerId)
@@ -49,18 +101,25 @@ func (m Manager) SendPeerEmail(ctx context.Context, linkOnly bool, peers ...doma
 		}
 
 		if peer.UserIdentifier == "" {
-			logrus.Debugf("skipping peer email for %s, no user linked", peerId)
+			slog.Debug("skipping peer email",
+				"peer", peerId,
+				"reason", "no user linked")
 			continue
 		}
 
 		user, err := m.users.GetUser(ctx, peer.UserIdentifier)
 		if err != nil {
-			logrus.Debugf("skipping peer email for %s, unable to fetch user: %v", peerId, err)
+			slog.Debug("skipping peer email",
+				"peer", peerId,
+				"reason", "unable to fetch user",
+				"error", err)
 			continue
 		}
 
 		if user.Email == "" {
-			logrus.Debugf("skipping peer email for %s, user has no mail address", peerId)
+			slog.Debug("skipping peer email",
+				"peer", peerId,
+				"reason", "user has no mail address")
 			continue
 		}
 

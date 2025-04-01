@@ -2,26 +2,23 @@ package core
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"html/template"
-	"io"
 	"io/fs"
-	"math/rand"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/go-pkgz/routegroup"
+
 	"github.com/h44z/wg-portal/internal"
+	"github.com/h44z/wg-portal/internal/app/api/core/middleware/cors"
+	"github.com/h44z/wg-portal/internal/app/api/core/middleware/logging"
+	"github.com/h44z/wg-portal/internal/app/api/core/middleware/recovery"
+	"github.com/h44z/wg-portal/internal/app/api/core/middleware/tracing"
+	"github.com/h44z/wg-portal/internal/app/api/core/respond"
 	"github.com/h44z/wg-portal/internal/config"
-
-	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
-	ginlogrus "github.com/toorop/gin-logrus"
-)
-
-var (
-	random = rand.New(rand.NewSource(time.Now().UTC().UnixNano()))
 )
 
 const (
@@ -31,19 +28,21 @@ const (
 type ApiVersion string
 type HandlerName string
 
-type GroupSetupFn func(group *gin.RouterGroup)
+type GroupSetupFn func(group *routegroup.Bundle)
 
 type ApiEndpointSetupFunc func() (ApiVersion, GroupSetupFn)
 
 type Server struct {
 	cfg      *config.Config
-	server   *gin.Engine
-	versions map[ApiVersion]*gin.RouterGroup
+	server   *routegroup.Bundle
+	tpl      *respond.TemplateRenderer
+	versions map[ApiVersion]*routegroup.Bundle
 }
 
 func NewServer(cfg *config.Config, endpoints ...ApiEndpointSetupFunc) (*Server, error) {
 	s := &Server{
-		cfg: cfg,
+		cfg:    cfg,
+		server: routegroup.New(http.NewServeMux()),
 	}
 
 	hostname, err := os.Hostname()
@@ -52,44 +51,39 @@ func NewServer(cfg *config.Config, endpoints ...ApiEndpointSetupFunc) (*Server, 
 	}
 	hostname += ", version " + internal.Version
 
-	// Setup http server
-	gin.SetMode(gin.ReleaseMode)
-	gin.DefaultWriter = io.Discard
-	s.server = gin.New()
+	s.server.Use(recovery.New().Handler)
 	if cfg.Web.RequestLogging {
-		if logrus.GetLevel() == logrus.TraceLevel {
-			gin.SetMode(gin.DebugMode)
-			s.server.Use(ginlogrus.Logger(logrus.StandardLogger()))
-		} else {
-			s.server.Use(ginlogrus.Logger(logrus.StandardLogger()))
-		}
-	}
-	s.server.Use(gin.Recovery()).Use(func(c *gin.Context) {
-		c.Writer.Header().Set("X-Served-By", hostname)
-		c.Next()
-	}).Use(func(c *gin.Context) {
-		xRequestID := uuid(16)
+		s.server.Use(logging.New(logging.WithLevel(logging.LogLevelDebug)).Handler)
 
-		c.Request.Header.Set(RequestIDKey, xRequestID)
-		c.Set(RequestIDKey, xRequestID)
-		c.Next()
-	})
+	}
+	s.server.Use(cors.New().Handler)
+	s.server.Use(tracing.New(
+		tracing.WithContextIdentifier(RequestIDKey),
+		tracing.WithHeaderIdentifier(RequestIDKey),
+	).Handler)
+	if cfg.Web.ExposeHostInfo {
+		s.server.Use(func(handler http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Served-By", hostname)
+				handler.ServeHTTP(w, r)
+			})
+		})
+	}
 
 	// Setup templates
-	templates := template.Must(template.New("").Funcs(s.server.FuncMap).ParseFS(apiTemplates, "assets/tpl/*.gohtml"))
-	s.server.SetHTMLTemplate(templates)
+	s.tpl = respond.NewTemplateRenderer(
+		template.Must(template.New("").ParseFS(apiTemplates, "assets/tpl/*.gohtml")),
+	)
 
 	// Serve static files
 	imgFs := http.FS(fsMust(fs.Sub(apiStatics, "assets/img")))
-	s.server.StaticFS("/css", http.FS(fsMust(fs.Sub(apiStatics, "assets/css"))))
-	s.server.StaticFS("/js", http.FS(fsMust(fs.Sub(apiStatics, "assets/js"))))
-	s.server.StaticFS("/img", imgFs)
-	s.server.StaticFS("/fonts", http.FS(fsMust(fs.Sub(apiStatics, "assets/fonts"))))
-	s.server.StaticFS("/doc", http.FS(fsMust(fs.Sub(apiStatics, "assets/doc"))))
+	s.server.HandleFiles("/css", http.FS(fsMust(fs.Sub(apiStatics, "assets/css"))))
+	s.server.HandleFiles("/js", http.FS(fsMust(fs.Sub(apiStatics, "assets/js"))))
+	s.server.HandleFiles("/img", imgFs)
+	s.server.HandleFiles("/fonts", http.FS(fsMust(fs.Sub(apiStatics, "assets/fonts"))))
+	s.server.HandleFiles("/doc", http.FS(fsMust(fs.Sub(apiStatics, "assets/doc"))))
 
 	// Setup routes
-	s.server.UseRawPath = true
-	s.server.UnescapePathValues = true
 	s.setupRoutes(endpoints...)
 	s.setupFrontendRoutes()
 
@@ -112,37 +106,37 @@ func (s *Server) Run(ctx context.Context, listenAddress string) {
 			err = srv.ListenAndServe()
 		}
 		if err != nil {
-			logrus.Infof("web service on %s exited: %v", listenAddress, err)
+			slog.Info("web service exited", "address", listenAddress, "error", err)
 			cancelFn()
 		}
 	}()
-	logrus.Infof("started web service on %s", listenAddress)
+	slog.Info("started web service", "address", listenAddress)
 
 	// Wait for the main context to end
 	<-srvContext.Done()
 
-	logrus.Debug("web service shutting down, grace period: 5 seconds...")
+	slog.Debug("web service shutting down, grace period: 5 seconds")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 
-	logrus.Debug("web service shut down")
+	slog.Debug("web service shut down")
 }
 
 func (s *Server) setupRoutes(endpoints ...ApiEndpointSetupFunc) {
-	s.server.GET("/api", s.landingPage)
-	s.versions = make(map[ApiVersion]*gin.RouterGroup)
+	s.server.HandleFunc("GET /api", s.landingPage)
+	s.versions = make(map[ApiVersion]*routegroup.Bundle)
 
 	for _, setupFunc := range endpoints {
 		version, groupSetupFn := setupFunc()
 
 		if _, ok := s.versions[version]; !ok {
-			s.versions[version] = s.server.Group(fmt.Sprintf("/api/%s", version))
+			s.versions[version] = s.server.Mount(fmt.Sprintf("/api/%s", version))
 
 			// OpenAPI documentation (via RapiDoc)
-			s.versions[version].GET("/swagger/index.html", s.rapiDocHandler(version)) // Deprecated: old link
-			s.versions[version].GET("/doc.html", s.rapiDocHandler(version))
+			s.versions[version].HandleFunc("GET /swagger/index.html", s.rapiDocHandler(version)) // Deprecated: old link
+			s.versions[version].HandleFunc("GET /doc.html", s.rapiDocHandler(version))
 
 			groupSetupFn(s.versions[version])
 		}
@@ -151,25 +145,27 @@ func (s *Server) setupRoutes(endpoints ...ApiEndpointSetupFunc) {
 
 func (s *Server) setupFrontendRoutes() {
 	// Serve static files
-	s.server.GET("/", func(c *gin.Context) {
-		c.Redirect(http.StatusMovedPermanently, "/app")
+	s.server.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		respond.Redirect(w, r, http.StatusMovedPermanently, "/app")
 	})
-	s.server.GET("/favicon.ico", func(c *gin.Context) {
-		c.Redirect(http.StatusMovedPermanently, "/app/favicon.ico")
+
+	s.server.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		respond.Redirect(w, r, http.StatusMovedPermanently, "/app/favicon.ico")
 	})
-	s.server.StaticFS("/app", http.FS(fsMust(fs.Sub(frontendStatics, "frontend-dist"))))
+
+	s.server.HandleFiles("/app", http.FS(fsMust(fs.Sub(frontendStatics, "frontend-dist"))))
 }
 
-func (s *Server) landingPage(c *gin.Context) {
-	c.HTML(http.StatusOK, "index.gohtml", gin.H{
+func (s *Server) landingPage(w http.ResponseWriter, _ *http.Request) {
+	s.tpl.HTML(w, http.StatusOK, "index.gohtml", respond.TplData{
 		"Version": internal.Version,
 		"Year":    time.Now().Year(),
 	})
 }
 
-func (s *Server) rapiDocHandler(version ApiVersion) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.HTML(http.StatusOK, "rapidoc.gohtml", gin.H{
+func (s *Server) rapiDocHandler(version ApiVersion) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.tpl.HTML(w, http.StatusOK, "rapidoc.gohtml", respond.TplData{
 			"RapiDocSource": "/js/rapidoc-min.js",
 			"ApiSpecUrl":    fmt.Sprintf("/doc/%s_swagger.yaml", version),
 			"Version":       internal.Version,
@@ -183,10 +179,4 @@ func fsMust(f fs.FS, err error) fs.FS {
 		panic(err)
 	}
 	return f
-}
-
-func uuid(len int) string {
-	bytes := make([]byte, len)
-	random.Read(bytes)
-	return base64.StdEncoding.EncodeToString(bytes)[:len]
 }

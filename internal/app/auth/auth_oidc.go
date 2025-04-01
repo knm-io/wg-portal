@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
+
 	"github.com/h44z/wg-portal/internal/config"
 	"github.com/h44z/wg-portal/internal/domain"
-	"github.com/sirupsen/logrus"
-	"golang.org/x/oauth2"
 )
 
+// OidcAuthenticator is an authenticator for OpenID Connect providers.
 type OidcAuthenticator struct {
 	name                string
 	provider            *oidc.Provider
@@ -59,22 +61,27 @@ func newOidcAuthenticator(
 	return provider, nil
 }
 
+// GetName returns the name of the authenticator.
 func (o OidcAuthenticator) GetName() string {
 	return o.name
 }
 
+// RegistrationEnabled returns whether registration is enabled for this authenticator.
 func (o OidcAuthenticator) RegistrationEnabled() bool {
 	return o.registrationEnabled
 }
 
-func (o OidcAuthenticator) GetType() domain.AuthenticatorType {
-	return domain.AuthenticatorTypeOidc
+// GetType returns the type of the authenticator.
+func (o OidcAuthenticator) GetType() AuthenticatorType {
+	return AuthenticatorTypeOidc
 }
 
+// AuthCodeURL returns the URL for the OAuth2 flow.
 func (o OidcAuthenticator) AuthCodeURL(state string, opts ...oauth2.AuthCodeOption) string {
 	return o.cfg.AuthCodeURL(state, opts...)
 }
 
+// Exchange exchanges the code for a token.
 func (o OidcAuthenticator) Exchange(ctx context.Context, code string, opts ...oauth2.AuthCodeOption) (
 	*oauth2.Token,
 	error,
@@ -82,8 +89,9 @@ func (o OidcAuthenticator) Exchange(ctx context.Context, code string, opts ...oa
 	return o.cfg.Exchange(ctx, code, opts...)
 }
 
+// GetUserInfo retrieves the user info from the token.
 func (o OidcAuthenticator) GetUserInfo(ctx context.Context, token *oauth2.Token, nonce string) (
-	map[string]interface{},
+	map[string]any,
 	error,
 ) {
 	rawIDToken, ok := token.Extra("id_token").(string)
@@ -98,19 +106,22 @@ func (o OidcAuthenticator) GetUserInfo(ctx context.Context, token *oauth2.Token,
 		return nil, errors.New("nonce mismatch")
 	}
 
-	var tokenFields map[string]interface{}
+	var tokenFields map[string]any
 	if err = idToken.Claims(&tokenFields); err != nil {
 		return nil, fmt.Errorf("failed to parse extra claims: %w", err)
 	}
 
 	if o.userInfoLogging {
 		contents, _ := json.Marshal(tokenFields)
-		logrus.Tracef("User info from OIDC source %s: %v", o.name, string(contents))
+		slog.Debug("OIDC user info",
+			"source", o.name,
+			"info", string(contents))
 	}
 
 	return tokenFields, nil
 }
 
-func (o OidcAuthenticator) ParseUserInfo(raw map[string]interface{}) (*domain.AuthenticatorUserInfo, error) {
+// ParseUserInfo parses the user info.
+func (o OidcAuthenticator) ParseUserInfo(raw map[string]any) (*domain.AuthenticatorUserInfo, error) {
 	return parseOauthUserInfo(o.userInfoMapping, o.userAdminMapping, raw)
 }

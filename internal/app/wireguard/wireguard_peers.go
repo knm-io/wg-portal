@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/h44z/wg-portal/internal/app"
+	"github.com/h44z/wg-portal/internal/app/audit"
 	"github.com/h44z/wg-portal/internal/domain"
-	"github.com/sirupsen/logrus"
 )
 
+// CreateDefaultPeer creates a default peer for the given user on all server interfaces.
 func (m Manager) CreateDefaultPeer(ctx context.Context, userId domain.UserIdentifier) error {
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return err
@@ -48,11 +50,14 @@ func (m Manager) CreateDefaultPeer(ctx context.Context, userId domain.UserIdenti
 		}
 	}
 
-	logrus.Infof("created %d default peers for user %s", len(newPeers), userId)
+	slog.InfoContext(ctx, "created default peers for user",
+		"user", userId,
+		"count", len(newPeers))
 
 	return nil
 }
 
+// GetUserPeers returns all peers for the given user.
 func (m Manager) GetUserPeers(ctx context.Context, id domain.UserIdentifier) ([]domain.Peer, error) {
 	if err := domain.ValidateUserAccessRights(ctx, id); err != nil {
 		return nil, err
@@ -61,6 +66,7 @@ func (m Manager) GetUserPeers(ctx context.Context, id domain.UserIdentifier) ([]
 	return m.db.GetUserPeers(ctx, id)
 }
 
+// PreparePeer prepares a new peer for the given interface with fresh keys and ip addresses.
 func (m Manager) PreparePeer(ctx context.Context, id domain.InterfaceIdentifier) (*domain.Peer, error) {
 	if !m.cfg.Core.SelfProvisioningAllowed {
 		if err := domain.ValidateAdminAccessRights(ctx); err != nil {
@@ -141,6 +147,7 @@ func (m Manager) PreparePeer(ctx context.Context, id domain.InterfaceIdentifier)
 	return freshPeer, nil
 }
 
+// GetPeer returns the peer with the given identifier.
 func (m Manager) GetPeer(ctx context.Context, id domain.PeerIdentifier) (*domain.Peer, error) {
 	peer, err := m.db.GetPeer(ctx, id)
 	if err != nil {
@@ -154,6 +161,7 @@ func (m Manager) GetPeer(ctx context.Context, id domain.PeerIdentifier) (*domain
 	return peer, nil
 }
 
+// CreatePeer creates a new peer.
 func (m Manager) CreatePeer(ctx context.Context, peer *domain.Peer) (*domain.Peer, error) {
 	if !m.cfg.Core.SelfProvisioningAllowed {
 		if err := domain.ValidateAdminAccessRights(ctx); err != nil {
@@ -199,6 +207,8 @@ func (m Manager) CreatePeer(ctx context.Context, peer *domain.Peer) (*domain.Pee
 	return peer, nil
 }
 
+// CreateMultiplePeers creates multiple new peers for the given user identifiers.
+// It calls PreparePeer for each user identifier in the request.
 func (m Manager) CreateMultiplePeers(
 	ctx context.Context,
 	interfaceId domain.InterfaceIdentifier,
@@ -241,6 +251,7 @@ func (m Manager) CreateMultiplePeers(
 	return createdPeers, nil
 }
 
+// UpdatePeer updates the given peer.
 func (m Manager) UpdatePeer(ctx context.Context, peer *domain.Peer) (*domain.Peer, error) {
 	existingPeer, err := m.db.GetPeer(ctx, peer.Identifier)
 	if err != nil {
@@ -307,6 +318,7 @@ func (m Manager) UpdatePeer(ctx context.Context, peer *domain.Peer) (*domain.Pee
 	return peer, nil
 }
 
+// DeletePeer deletes the peer with the given identifier.
 func (m Manager) DeletePeer(ctx context.Context, id domain.PeerIdentifier) error {
 	peer, err := m.db.GetPeer(ctx, id)
 	if err != nil {
@@ -339,6 +351,7 @@ func (m Manager) DeletePeer(ctx context.Context, id domain.PeerIdentifier) error
 	return nil
 }
 
+// GetPeerStats returns the status of the peer with the given identifier.
 func (m Manager) GetPeerStats(ctx context.Context, id domain.InterfaceIdentifier) ([]domain.PeerStatus, error) {
 	_, peers, err := m.db.GetInterfaceAndPeers(ctx, id)
 	if err != nil {
@@ -357,6 +370,7 @@ func (m Manager) GetPeerStats(ctx context.Context, id domain.InterfaceIdentifier
 	return m.db.GetPeersStats(ctx, peerIds...)
 }
 
+// GetUserPeerStats returns the status of all peers for the given user.
 func (m Manager) GetUserPeerStats(ctx context.Context, id domain.UserIdentifier) ([]domain.PeerStatus, error) {
 	if err := domain.ValidateUserAccessRights(ctx, id); err != nil {
 		return nil, err
@@ -412,6 +426,15 @@ func (m Manager) savePeers(ctx context.Context, peers ...*domain.Peer) error {
 		if err != nil {
 			return fmt.Errorf("save failure for peer %s: %w", peer.Identifier, err)
 		}
+
+		// publish event
+		m.bus.Publish(app.TopicAuditPeerChanged, domain.AuditEventWrapper[audit.PeerEvent]{
+			Ctx: ctx,
+			Event: audit.PeerEvent{
+				Action: "save",
+				Peer:   *peer,
+			},
+		})
 
 		interfaces[peer.InterfaceIdentifier] = struct{}{}
 	}
@@ -474,7 +497,7 @@ func (m Manager) getFreshPeerIpConfig(ctx context.Context, iface *domain.Interfa
 	return
 }
 
-func (m Manager) validatePeerModifications(ctx context.Context, old, new *domain.Peer) error {
+func (m Manager) validatePeerModifications(ctx context.Context, _, _ *domain.Peer) error {
 	currentUser := domain.GetUserInfo(ctx)
 
 	if !currentUser.IsAdmin && !m.cfg.Core.SelfProvisioningAllowed {
@@ -484,7 +507,7 @@ func (m Manager) validatePeerModifications(ctx context.Context, old, new *domain
 	return nil
 }
 
-func (m Manager) validatePeerCreation(ctx context.Context, old, new *domain.Peer) error {
+func (m Manager) validatePeerCreation(ctx context.Context, _, new *domain.Peer) error {
 	currentUser := domain.GetUserInfo(ctx)
 
 	if new.Identifier == "" {
@@ -503,7 +526,7 @@ func (m Manager) validatePeerCreation(ctx context.Context, old, new *domain.Peer
 	return nil
 }
 
-func (m Manager) validatePeerDeletion(ctx context.Context, del *domain.Peer) error {
+func (m Manager) validatePeerDeletion(ctx context.Context, _ *domain.Peer) error {
 	currentUser := domain.GetUserInfo(ctx)
 
 	if !currentUser.IsAdmin && !m.cfg.Core.SelfProvisioningAllowed {

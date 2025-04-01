@@ -2,35 +2,68 @@ package wireguard
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
+
+	probing "github.com/prometheus-community/pro-bing"
 
 	"github.com/h44z/wg-portal/internal/app"
 	"github.com/h44z/wg-portal/internal/config"
 	"github.com/h44z/wg-portal/internal/domain"
-	probing "github.com/prometheus-community/pro-bing"
-	"github.com/sirupsen/logrus"
-	evbus "github.com/vardius/message-bus"
 )
+
+type StatisticsDatabaseRepo interface {
+	GetAllInterfaces(ctx context.Context) ([]domain.Interface, error)
+	GetInterfacePeers(ctx context.Context, id domain.InterfaceIdentifier) ([]domain.Peer, error)
+	GetPeer(ctx context.Context, id domain.PeerIdentifier) (*domain.Peer, error)
+	UpdatePeerStatus(
+		ctx context.Context,
+		id domain.PeerIdentifier,
+		updateFunc func(in *domain.PeerStatus) (*domain.PeerStatus, error),
+	) error
+	UpdateInterfaceStatus(
+		ctx context.Context,
+		id domain.InterfaceIdentifier,
+		updateFunc func(in *domain.InterfaceStatus) (*domain.InterfaceStatus, error),
+	) error
+	DeletePeerStatus(ctx context.Context, id domain.PeerIdentifier) error
+}
+
+type StatisticsInterfaceController interface {
+	GetInterface(_ context.Context, id domain.InterfaceIdentifier) (*domain.PhysicalInterface, error)
+	GetPeers(_ context.Context, deviceId domain.InterfaceIdentifier) ([]domain.PhysicalPeer, error)
+}
+
+type StatisticsMetricsServer interface {
+	UpdateInterfaceMetrics(status domain.InterfaceStatus)
+	UpdatePeerMetrics(peer *domain.Peer, status domain.PeerStatus)
+}
+
+type StatisticsEventBus interface {
+	// Subscribe subscribes to a topic
+	Subscribe(topic string, fn interface{}) error
+}
 
 type StatisticsCollector struct {
 	cfg *config.Config
-	bus evbus.MessageBus
+	bus StatisticsEventBus
 
 	pingWaitGroup sync.WaitGroup
 	pingJobs      chan domain.Peer
 
 	db StatisticsDatabaseRepo
-	wg InterfaceController
-	ms MetricsServer
+	wg StatisticsInterfaceController
+	ms StatisticsMetricsServer
 }
 
+// NewStatisticsCollector creates a new statistics collector.
 func NewStatisticsCollector(
 	cfg *config.Config,
-	bus evbus.MessageBus,
+	bus StatisticsEventBus,
 	db StatisticsDatabaseRepo,
-	wg InterfaceController,
-	ms MetricsServer,
+	wg StatisticsInterfaceController,
+	ms StatisticsMetricsServer,
 ) (*StatisticsCollector, error) {
 	c := &StatisticsCollector{
 		cfg: cfg,
@@ -46,6 +79,8 @@ func NewStatisticsCollector(
 	return c, nil
 }
 
+// StartBackgroundJobs starts the background jobs for the statistics collector.
+// This method is non-blocking and returns immediately.
 func (c *StatisticsCollector) StartBackgroundJobs(ctx context.Context) {
 	c.startPingWorkers(ctx)
 	c.startInterfaceDataFetcher(ctx)
@@ -59,7 +94,7 @@ func (c *StatisticsCollector) startInterfaceDataFetcher(ctx context.Context) {
 
 	go c.collectInterfaceData(ctx)
 
-	logrus.Tracef("started interface data fetcher")
+	slog.Debug("started interface data fetcher")
 }
 
 func (c *StatisticsCollector) collectInterfaceData(ctx context.Context) {
@@ -73,14 +108,15 @@ func (c *StatisticsCollector) collectInterfaceData(ctx context.Context) {
 		case <-ticker.C:
 			interfaces, err := c.db.GetAllInterfaces(ctx)
 			if err != nil {
-				logrus.Warnf("failed to fetch all interfaces for data collection: %v", err)
+				slog.Warn("failed to fetch all interfaces for data collection", "error", err)
 				continue
 			}
 
 			for _, in := range interfaces {
 				physicalInterface, err := c.wg.GetInterface(ctx, in.Identifier)
 				if err != nil {
-					logrus.Warnf("failed to load physical interface %s for data collection: %v", in.Identifier, err)
+					slog.Warn("failed to load physical interface for data collection", "interface", in.Identifier,
+						"error", err)
 					continue
 				}
 				err = c.db.UpdateInterfaceStatus(ctx, in.Identifier,
@@ -95,9 +131,9 @@ func (c *StatisticsCollector) collectInterfaceData(ctx context.Context) {
 						return i, nil
 					})
 				if err != nil {
-					logrus.Warnf("failed to update interface status for %s: %v", in.Identifier, err)
+					slog.Warn("failed to update interface status", "interface", in.Identifier, "error", err)
 				}
-				logrus.Tracef("updated interface status for %s", in.Identifier)
+				slog.Debug("updated interface status", "interface", in.Identifier)
 			}
 		}
 	}
@@ -110,7 +146,7 @@ func (c *StatisticsCollector) startPeerDataFetcher(ctx context.Context) {
 
 	go c.collectPeerData(ctx)
 
-	logrus.Tracef("started peer data fetcher")
+	slog.Debug("started peer data fetcher")
 }
 
 func (c *StatisticsCollector) collectPeerData(ctx context.Context) {
@@ -124,14 +160,14 @@ func (c *StatisticsCollector) collectPeerData(ctx context.Context) {
 		case <-ticker.C:
 			interfaces, err := c.db.GetAllInterfaces(ctx)
 			if err != nil {
-				logrus.Warnf("failed to fetch all interfaces for peer data collection: %v", err)
+				slog.Warn("failed to fetch all interfaces for peer data collection", "error", err)
 				continue
 			}
 
 			for _, in := range interfaces {
 				peers, err := c.wg.GetPeers(ctx, in.Identifier)
 				if err != nil {
-					logrus.Warnf("failed to fetch peers for data collection (interface %s): %v", in.Identifier, err)
+					slog.Warn("failed to fetch peers for data collection", "interface", in.Identifier, "error", err)
 					continue
 				}
 				for _, peer := range peers {
@@ -157,9 +193,9 @@ func (c *StatisticsCollector) collectPeerData(ctx context.Context) {
 							return p, nil
 						})
 					if err != nil {
-						logrus.Warnf("failed to update peer status for %s: %v", peer.Identifier, err)
+						slog.Warn("failed to update peer status", "peer", peer.Identifier, "error", err)
 					} else {
-						logrus.Tracef("updated peer status for %s", peer.Identifier)
+						slog.Debug("updated peer status", "peer", peer.Identifier)
 					}
 				}
 			}
@@ -220,12 +256,12 @@ func (c *StatisticsCollector) startPingWorkers(ctx context.Context) {
 	go func() {
 		c.pingWaitGroup.Wait()
 
-		logrus.Tracef("stopped ping checks")
+		slog.Debug("stopped ping checks")
 	}()
 
 	go c.enqueuePingChecks(ctx)
 
-	logrus.Tracef("started ping checks")
+	slog.Debug("started ping checks")
 }
 
 func (c *StatisticsCollector) enqueuePingChecks(ctx context.Context) {
@@ -241,14 +277,14 @@ func (c *StatisticsCollector) enqueuePingChecks(ctx context.Context) {
 		case <-ticker.C:
 			interfaces, err := c.db.GetAllInterfaces(ctx)
 			if err != nil {
-				logrus.Warnf("failed to fetch all interfaces for ping checks: %v", err)
+				slog.Warn("failed to fetch all interfaces for ping checks", "error", err)
 				continue
 			}
 
 			for _, in := range interfaces {
 				peers, err := c.db.GetInterfacePeers(ctx, in.Identifier)
 				if err != nil {
-					logrus.Warnf("failed to fetch peers for ping checks (interface %s): %v", in.Identifier, err)
+					slog.Warn("failed to fetch peers for ping checks", "interface", in.Identifier, "error", err)
 					continue
 				}
 				for _, peer := range peers {
@@ -263,7 +299,7 @@ func (c *StatisticsCollector) pingWorker(ctx context.Context) {
 	defer c.pingWaitGroup.Done()
 	for peer := range c.pingJobs {
 		peerPingable := c.isPeerPingable(ctx, peer)
-		logrus.Tracef("peer %s pingable: %t", peer.Identifier, peerPingable)
+		slog.Debug("peer ping check completed", "peer", peer.Identifier, "pingable", peerPingable)
 
 		now := time.Now()
 		err := c.db.UpdatePeerStatus(ctx, peer.Identifier,
@@ -282,9 +318,9 @@ func (c *StatisticsCollector) pingWorker(ctx context.Context) {
 				return p, nil
 			})
 		if err != nil {
-			logrus.Warnf("failed to update peer ping status for %s: %v", peer.Identifier, err)
+			slog.Warn("failed to update peer ping status", "peer", peer.Identifier, "error", err)
 		} else {
-			logrus.Tracef("updated peer ping status for %s", peer.Identifier)
+			slog.Debug("updated peer ping status", "peer", peer.Identifier)
 		}
 	}
 }
@@ -301,7 +337,7 @@ func (c *StatisticsCollector) isPeerPingable(ctx context.Context, peer domain.Pe
 
 	pinger, err := probing.NewPinger(checkAddr)
 	if err != nil {
-		logrus.Tracef("failed to instatiate pinger for %s (%s): %v", peer.Identifier, checkAddr, err)
+		slog.Debug("failed to instantiate pinger", "peer", peer.Identifier, "address", checkAddr, "error", err)
 		return false
 	}
 
@@ -311,7 +347,7 @@ func (c *StatisticsCollector) isPeerPingable(ctx context.Context, peer domain.Pe
 	pinger.Timeout = 2 * time.Second
 	err = pinger.RunWithContext(ctx) // Blocks until finished.
 	if err != nil {
-		logrus.Tracef("pinger for peer %s (%s) exited unexpectedly: %v", peer.Identifier, checkAddr, err)
+		slog.Debug("pinger for peer exited unexpectedly", "peer", peer.Identifier, "address", checkAddr, "error", err)
 		return false
 	}
 	stats := pinger.Statistics()
@@ -326,7 +362,7 @@ func (c *StatisticsCollector) updatePeerMetrics(ctx context.Context, status doma
 	// Fetch peer data from the database
 	peer, err := c.db.GetPeer(ctx, status.PeerId)
 	if err != nil {
-		logrus.Warnf("failed to fetch peer data for metrics %s: %v", status.PeerId, err)
+		slog.Warn("failed to fetch peer data for metrics", "peer", status.PeerId, "error", err)
 		return
 	}
 	c.ms.UpdatePeerMetrics(peer, status)
@@ -342,7 +378,7 @@ func (c *StatisticsCollector) handlePeerIdentifierChangeEvent(oldIdentifier, new
 	// remove potential left-over status data
 	err := c.db.DeletePeerStatus(ctx, oldIdentifier)
 	if err != nil {
-		logrus.Errorf("failed to delete old peer status for migrated peer, %s -> %s: %v",
-			oldIdentifier, newIdentifier, err)
+		slog.Error("failed to delete old peer status for migrated peer", "oldIdentifier", oldIdentifier,
+			"newIdentifier", newIdentifier, "error", err)
 	}
 }
