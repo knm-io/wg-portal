@@ -77,47 +77,12 @@ func (m Manager) RegisterUser(ctx context.Context, user *domain.User) error {
 		return err
 	}
 
-	err := m.NewUser(ctx, user)
+	createdUser, err := m.CreateUser(ctx, user)
 	if err != nil {
 		return err
 	}
 
-	m.bus.Publish(app.TopicUserRegistered, user)
-
-	return nil
-}
-
-// NewUser creates a new user.
-func (m Manager) NewUser(ctx context.Context, user *domain.User) error {
-	if user.Identifier == "" {
-		return errors.New("missing user identifier")
-	}
-
-	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
-		return err
-	}
-
-	err := m.users.SaveUser(ctx, user.Identifier, func(u *domain.User) (*domain.User, error) {
-		u.Identifier = user.Identifier
-		u.Email = user.Email
-		u.Source = user.Source
-		u.ProviderName = user.ProviderName
-		u.IsAdmin = user.IsAdmin
-		u.Firstname = user.Firstname
-		u.Lastname = user.Lastname
-		u.Phone = user.Phone
-		u.Department = user.Department
-		u.Notes = user.Notes
-		u.ApiToken = user.ApiToken
-		u.ApiTokenCreated = user.ApiTokenCreated
-
-		return u, nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to save user: %w", err)
-	}
-
-	m.bus.Publish(app.TopicUserCreated, user)
+	m.bus.Publish(app.TopicUserRegistered, *createdUser)
 
 	return nil
 }
@@ -229,6 +194,8 @@ func (m Manager) UpdateUser(ctx context.Context, user *domain.User) (*domain.Use
 		return nil, fmt.Errorf("update failure: %w", err)
 	}
 
+	m.bus.Publish(app.TopicUserUpdated, *user)
+
 	switch {
 	case !existingUser.IsDisabled() && user.IsDisabled():
 		m.bus.Publish(app.TopicUserDisabled, *user)
@@ -241,6 +208,10 @@ func (m Manager) UpdateUser(ctx context.Context, user *domain.User) (*domain.Use
 
 // CreateUser creates a new user.
 func (m Manager) CreateUser(ctx context.Context, user *domain.User) (*domain.User, error) {
+	if user.Identifier == "" {
+		return nil, errors.New("missing user identifier")
+	}
+
 	if err := domain.ValidateAdminAccessRights(ctx); err != nil {
 		return nil, err
 	}
@@ -269,6 +240,8 @@ func (m Manager) CreateUser(ctx context.Context, user *domain.User) (*domain.Use
 	if err != nil {
 		return nil, fmt.Errorf("creation failure: %w", err)
 	}
+
+	m.bus.Publish(app.TopicUserCreated, *user)
 
 	return user, nil
 }
@@ -321,7 +294,8 @@ func (m Manager) ActivateApi(ctx context.Context, id domain.UserIdentifier) (*do
 		return nil, fmt.Errorf("update failure: %w", err)
 	}
 
-	m.bus.Publish(app.TopicUserApiEnabled, user)
+	m.bus.Publish(app.TopicUserUpdated, *user)
+	m.bus.Publish(app.TopicUserApiEnabled, *user)
 
 	return user, nil
 }
@@ -348,7 +322,8 @@ func (m Manager) DeactivateApi(ctx context.Context, id domain.UserIdentifier) (*
 		return nil, fmt.Errorf("update failure: %w", err)
 	}
 
-	m.bus.Publish(app.TopicUserApiDisabled, user)
+	m.bus.Publish(app.TopicUserUpdated, *user)
+	m.bus.Publish(app.TopicUserApiDisabled, *user)
 
 	return user, nil
 }
@@ -414,12 +389,14 @@ func (m Manager) validateCreation(ctx context.Context, new *domain.User) error {
 		return fmt.Errorf("reserved user identifier: %w", domain.ErrInvalidData)
 	}
 
-	if new.Source != domain.UserSourceDatabase {
+	// Admins are allowed to create users for arbitrary sources.
+	if new.Source != domain.UserSourceDatabase && !currentUser.IsAdmin {
 		return fmt.Errorf("invalid user source: %s, only %s is allowed: %w",
 			new.Source, domain.UserSourceDatabase, domain.ErrInvalidData)
 	}
 
-	if string(new.Password) == "" {
+	// database users must have a password
+	if new.Source == domain.UserSourceDatabase && string(new.Password) == "" {
 		return fmt.Errorf("invalid password: %w", domain.ErrInvalidData)
 	}
 
@@ -455,6 +432,8 @@ func (m Manager) validateApiChange(ctx context.Context, user *domain.User) error
 }
 
 func (m Manager) runLdapSynchronizationService(ctx context.Context) {
+	ctx = domain.SetUserInfo(ctx, domain.LdapSyncContextUserInfo()) // switch to service context for LDAP sync
+
 	for _, ldapCfg := range m.cfg.Auth.Ldap { // LDAP Auth providers
 		go func(cfg config.LdapProvider) {
 			syncInterval := cfg.SyncInterval
@@ -463,6 +442,15 @@ func (m Manager) runLdapSynchronizationService(ctx context.Context) {
 				return
 			}
 
+			// perform initial sync
+			err := m.synchronizeLdapUsers(ctx, &cfg)
+			if err != nil {
+				slog.Error("failed to synchronize LDAP users", "provider", cfg.ProviderName, "error", err)
+			} else {
+				slog.Debug("initial LDAP user sync completed", "provider", cfg.ProviderName)
+			}
+
+			// start periodic sync
 			running := true
 			for running {
 				select {
@@ -546,7 +534,7 @@ func (m Manager) updateLdapUsers(
 			// create new user
 			slog.Debug("creating new user from provider", "user", user.Identifier, "provider", provider.ProviderName)
 
-			err := m.NewUser(tctx, user)
+			_, err := m.CreateUser(tctx, user)
 			if err != nil {
 				cancel()
 				return fmt.Errorf("create error for user id %s: %w", user.Identifier, err)

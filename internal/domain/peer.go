@@ -3,11 +3,11 @@ package domain
 import (
 	"fmt"
 	"net"
-	"regexp"
 	"strings"
 	"time"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+	"github.com/h44z/wg-portal/internal/config"
 
 	"github.com/h44z/wg-portal/internal"
 )
@@ -87,17 +87,19 @@ func (p *Peer) CopyCalculatedAttributes(src *Peer) {
 
 func (p *Peer) GetConfigFileName() string {
 	filename := ""
-	reg := regexp.MustCompile("[^a-zA-Z0-9-_]+")
 
 	if p.DisplayName != "" {
 		filename = p.DisplayName
 		filename = strings.ReplaceAll(filename, " ", "_")
-		filename = reg.ReplaceAllString(filename, "")
+		// Eliminate the automatically detected peer part,
+		// as it makes the filename indistinguishable among multiple auto-detected peers.
+		filename = strings.ReplaceAll(filename, "Autodetected_", "")
+		filename = allowedFileNameRegex.ReplaceAllString(filename, "")
 		filename = internal.TruncateString(filename, 16)
 		filename += ".conf"
 	} else {
 		filename = fmt.Sprintf("wg_%s", internal.TruncateString(string(p.Identifier), 8))
-		filename = reg.ReplaceAllString(filename, "")
+		filename = allowedFileNameRegex.ReplaceAllString(filename, "")
 		filename += ".conf"
 	}
 
@@ -128,16 +130,18 @@ func (p *Peer) GenerateDisplayName(prefix string) {
 }
 
 // OverwriteUserEditableFields overwrites the user editable fields of the peer with the values from the userPeer
-func (p *Peer) OverwriteUserEditableFields(userPeer *Peer) {
+func (p *Peer) OverwriteUserEditableFields(userPeer *Peer, cfg *config.Config) {
 	p.DisplayName = userPeer.DisplayName
-	p.Interface.PublicKey = userPeer.Interface.PublicKey
-	p.Interface.PrivateKey = userPeer.Interface.PrivateKey
+	if cfg.Core.EditableKeys {
+		p.Interface.PublicKey = userPeer.Interface.PublicKey
+		p.Interface.PrivateKey = userPeer.Interface.PrivateKey
+		p.PresharedKey = userPeer.PresharedKey
+	}
 	p.Interface.Mtu = userPeer.Interface.Mtu
 	p.PersistentKeepalive = userPeer.PersistentKeepalive
 	p.ExpiresAt = userPeer.ExpiresAt
 	p.Disabled = userPeer.Disabled
 	p.DisabledReason = userPeer.DisabledReason
-	p.PresharedKey = userPeer.PresharedKey
 }
 
 type PeerInterfaceConfig struct {
