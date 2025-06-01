@@ -1,10 +1,10 @@
 This page provides an overview of **all available configuration options** for WireGuard Portal.
 
-You can supply these configurations in a **YAML** file (e.g. `config.yaml`) when starting the Portal.
-The path of the configuration file defaults to **config/config.yml** in the working directory of the executable.  
-It is possible to override configuration filepath using the environment variable `WG_PORTAL_CONFIG`.
+You can supply these configurations in a **YAML** file when starting the Portal.
+The path of the configuration file defaults to `config/config.yaml` (or `config/config.yml`) in the working directory of the executable.  
+It is possible to override the configuration filepath using the environment variable `WG_PORTAL_CONFIG`.
 For example: `WG_PORTAL_CONFIG=/etc/wg-portal/config.yaml ./wg-portal`.  
-Also, environment variable substitution in config file is supported. Refer to [syntax](https://github.com/a8m/envsubst?tab=readme-ov-file#docs).
+Also, environment variable substitution in the config file is supported. Refer to the [syntax](https://github.com/a8m/envsubst?tab=readme-ov-file#docs).
 
 Configuration examples are available on the [Examples](./examples.md) page.
 
@@ -14,7 +14,8 @@ Configuration examples are available on the [Examples](./examples.md) page.
 ```yaml
 core:
   admin_user: admin@wgportal.local
-  admin_password: wgportal
+  admin_password: wgportal-default
+  admin_api_token: ""
   editable_keys: true
   create_default_peer: false
   create_default_peer_on_creation: false
@@ -35,13 +36,15 @@ advanced:
   config_storage_path: ""
   expiry_check_interval: 15m
   rule_prio_offset: 20000
+  route_table_offset: 20000
   api_admin_only: true
 
 database:
   debug: false
-  slow_query_threshold: 0
+  slow_query_threshold: "0"
   type: sqlite
   dsn: data/sqlite.db
+  encryption_passphrase: ""
 
 statistics:
   use_ping_checks: true
@@ -69,6 +72,9 @@ auth:
   oidc: []
   oauth: []
   ldap: []
+  webauthn:
+    enabled: true
+  min_password_length: 16
 
 web:
   listening_address: :8888
@@ -79,6 +85,7 @@ web:
   session_secret: very_secret
   csrf_secret: extremely_secret
   request_logging: false
+  expose_host_info: false
   cert_file: ""
   key_File: ""
 
@@ -114,8 +121,9 @@ More advanced options are found in the subsequent `Advanced` section.
 - **Description:** The administrator user. This user will be created as a default admin if it does not yet exist.
 
 ### `admin_password`
-- **Default:** `wgportal`
-- **Description:** The administrator password. The default password of `wgportal` should be changed immediately.
+- **Default:** `wgportal-default`
+- **Description:** The administrator password. The default password should be changed immediately!
+- **Important:** The password should be strong and secure. The minimum password length is specified in [auth.min_password_length](#min_password_length). By default, it is 16 characters.
 
 ### `admin_api_token`
 - **Default:** *(empty)*
@@ -214,13 +222,15 @@ Additional or more specialized configuration options for logging and interface c
 Configuration for the underlying database used by WireGuard Portal. 
 Supported databases include SQLite, MySQL, Microsoft SQL Server, and Postgres.
 
+If sensitive values (like private keys) should be stored in an encrypted format, set the `encryption_passphrase` option.
+
 ### `debug`
 - **Default:** `false`
 - **Description:** If `true`, logs all database statements (verbose).
 
 ### `slow_query_threshold`
-- **Default:** 0
-- **Description:** A time threshold (e.g., `100ms`) above which queries are considered slow and logged as warnings. If empty or zero, slow query logging is disabled. Format uses `s`, `ms` for seconds, milliseconds, see [time.ParseDuration](https://golang.org/pkg/time/#ParseDuration).
+- **Default:** "0"
+- **Description:** A time threshold (e.g., `100ms`) above which queries are considered slow and logged as warnings. If zero, slow query logging is disabled. Format uses `s`, `ms` for seconds, milliseconds, see [time.ParseDuration](https://golang.org/pkg/time/#ParseDuration). The value must be a string.
 
 ### `type`
 - **Default:** `sqlite`
@@ -233,6 +243,12 @@ Supported databases include SQLite, MySQL, Microsoft SQL Server, and Postgres.
   ```text
   user:pass@tcp(1.2.3.4:3306)/dbname?charset=utf8mb4&parseTime=True&loc=Local
   ```
+
+### `encryption_passphrase`
+- **Default:** *(empty)*
+- **Description:** Passphrase for encrypting sensitive values such as private keys in the database. Encryption is only applied if this passphrase is set.
+  **Important:** Once you enable encryption by setting this passphrase, you cannot disable it or change it afterward. 
+  New or updated records will be encrypted; existing data remains in plaintext until it’s next modified.
 
 ---
 
@@ -274,7 +290,7 @@ Controls how WireGuard Portal collects and reports usage statistics, including p
 
 ### `listening_address`
 - **Default:** `:8787`
-- **Description:** Address and port for the integrated Prometheus metric server (e.g., `:8787`).
+- **Description:** Address and port for the integrated Prometheus metric server (e.g., `:8787` or `127.0.0.1:8787`).
 
 ---
 
@@ -322,8 +338,16 @@ Options for configuring email notifications or sending peer configurations via e
 
 ## Auth
 
-WireGuard Portal supports multiple authentication strategies, including **OpenID Connect** (`oidc`), **OAuth** (`oauth`), and **LDAP** (`ldap`).
+WireGuard Portal supports multiple authentication strategies, including **OpenID Connect** (`oidc`), **OAuth** (`oauth`), **Passkeys** (`webauthn`) and **LDAP** (`ldap`).
 Each can have multiple providers configured. Below are the relevant keys.
+
+Some core authentication options are shared across all providers, while others are specific to each provider type.
+
+### `min_password_length`
+- **Default:** `16`
+- **Description:** Minimum password length for local authentication. This is not enforced for LDAP authentication.
+  The default admin password strength is also enforced by this setting.
+- **Important:** The password should be strong and secure. It is recommended to use a password with at least 16 characters, including uppercase and lowercase letters, numbers, and special characters.
 
 ---
 
@@ -355,6 +379,10 @@ Below are the properties for each OIDC provider entry inside `auth.oidc`:
 #### `extra_scopes`
 - **Default:** *(empty)*
 - **Description:** A list of additional OIDC scopes (e.g., `profile`, `email`).
+
+#### `allowed_domains`
+- **Default:** *(empty)*
+- **Description:** A list of allowlisted domains. Only users with email addresses in these domains can log in or register. This is useful for restricting access to specific organizations or groups.
 
 #### `field_map`
 - **Default:** *(empty)*
@@ -424,6 +452,10 @@ Below are the properties for each OAuth provider entry inside `auth.oauth`:
 #### `scopes`
 - **Default:** *(empty)*
 - **Description:** A list of OAuth scopes.
+
+#### `allowed_domains`
+- **Default:** *(empty)*
+- **Description:** A list of allowlisted domains. Only users with email addresses in these domains can log in or register. This is useful for restricting access to specific organizations or groups.
 
 #### `field_map`
 - **Default:** *(empty)*
@@ -520,6 +552,8 @@ Below are the properties for each LDAP provider entry inside `auth.ldap`:
   ```text
   (&(objectClass=organizationalPerson)(mail={{login_identifier}})(!userAccountControl:1.2.840.113556.1.4.803:=2))
   ```
+- **Important**: The `login_filter` must always be a valid LDAP filter. It should at most return one user. 
+  If the filter returns multiple or no users, the login will fail.
 
 #### `admin_group`
 - **Default:** *(empty)*
@@ -560,6 +594,16 @@ Below are the properties for each LDAP provider entry inside `auth.ldap`:
 
 ---
 
+### WebAuthn (Passkeys)
+
+The `webauthn` section contains configuration options for WebAuthn authentication (passkeys).
+
+#### `enabled`
+- **Default:** `true`
+- **Description:** If `true`, Passkey authentication is enabled. If `false`, WebAuthn is disabled.
+  Users are encouraged to use Passkeys for secure authentication instead of passwords. 
+  If a passkey is registered, the password login is still available as a fallback. Ensure that the password is strong and secure.
+
 ## Web
 
 The web section contains configuration options for the web server, including the listening address, session management, and CSRF protection.
@@ -568,7 +612,8 @@ Without a valid `external_url`, the login process may fail due to CSRF protectio
 
 ### `listening_address`
 - **Default:** `:8888`
-- **Description:** The listening port of the web server.
+- **Description:** The listening address and port for the web server (e.g., `:8888` to bind on all interfaces or `127.0.0.1:8888` to bind only on the loopback interface).
+  Ensure that access to WireGuard Portal is protected against unauthorized access, especially if binding to all interfaces.
 
 ### `external_url`
 - **Default:** `http://localhost:8888`
@@ -598,6 +643,10 @@ Without a valid `external_url`, the login process may fail due to CSRF protectio
 ### `request_logging`
 - **Default:** `false`
 - **Description:** Log all HTTP requests.
+
+### `expose_host_info`
+- **Default:** `false`
+- **Description:** Expose the hostname and version of the WireGuard Portal server in an HTTP header. This is useful for debugging but may expose sensitive information.
 
 ### `cert_file`
 - **Default:** *(empty)*

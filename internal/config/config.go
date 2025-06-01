@@ -101,7 +101,7 @@ func defaultConfig() *Config {
 	cfg := &Config{}
 
 	cfg.Core.AdminUser = "admin@wgportal.local"
-	cfg.Core.AdminPassword = "wgportal"
+	cfg.Core.AdminPassword = "wgportal-default"
 	cfg.Core.AdminApiToken = "" // by default, the API access is disabled
 	cfg.Core.ImportExisting = true
 	cfg.Core.RestoreState = true
@@ -164,6 +164,9 @@ func defaultConfig() *Config {
 	cfg.Webhook.Authentication = ""
 	cfg.Webhook.Timeout = 10 * time.Second
 
+	cfg.Auth.WebAuthn.Enabled = true
+	cfg.Auth.MinPasswordLength = 16
+
 	return cfg
 }
 
@@ -174,14 +177,23 @@ func GetConfig() (*Config, error) {
 
 	// override config values from YAML file
 
-	cfgFileName := "config/config.yml"
+	cfgFileName := "config/config.yaml"
+	cfgFileNameFallback := "config/config.yml"
 	if envCfgFileName := os.Getenv("WG_PORTAL_CONFIG"); envCfgFileName != "" {
 		cfgFileName = envCfgFileName
+		cfgFileNameFallback = envCfgFileName
+	}
+
+	// check if the config file exists, otherwise use the fallback file name
+	if _, err := os.Stat(cfgFileName); os.IsNotExist(err) {
+		cfgFileName = cfgFileNameFallback
 	}
 
 	if err := loadConfigFile(cfg, cfgFileName); err != nil {
 		return nil, fmt.Errorf("failed to load config from yaml: %w", err)
 	}
+
+	cfg.Web.Sanitize()
 
 	return cfg, nil
 }

@@ -29,7 +29,8 @@
       "label": "Password",
       "placeholder": "Please enter your password"
     },
-    "button": "Sign in"
+    "button": "Sign in",
+    "button-webauthn": "Use Passkey"
   },
   "menu": {
     "home": "Home",
@@ -40,7 +41,8 @@
     "settings": "Settings",
     "audit": "Audit Log",
     "login": "Login",
-    "logout": "Logout"
+    "logout": "Logout",
+    "keygen": "Key Generator"
   },
   "home": {
     "headline": "WireGuard® VPN Portal",
@@ -187,6 +189,35 @@
       "button-enable-title": "Enable API, this will generate a new token.",
       "button-enable-text": "Enable API",
       "api-link": "API Documentation"
+    },
+    "webauthn": {
+      "headline": "Passkey Settings",
+      "abstract": "Passkeys are a modern way to authenticate users without the need for passwords. They are stored securely in your browser and can be used to log in to the WireGuard Portal.",
+      "active-description": "At least one passkey is currently active for your user account.",
+      "inactive-description": "No passkeys are currently registered for your user account. Press the button below to register a new passkey.",
+      "table": {
+        "name": "Name",
+        "created": "Created",
+        "actions": ""
+      },
+      "credentials-list": "Currently registered Passkeys",
+      "modal-delete": {
+        "headline": "Delete Passkey",
+        "abstract": "Are you sure you want to delete this passkey? You will not be able to log in with this passkey anymore.",
+        "created": "Created:",
+        "button-delete": "Delete",
+        "button-cancel": "Cancel"
+      },
+      "button-rename-title": "Rename",
+      "button-rename-text": "Rename the passkey.",
+      "button-save-title": "Save",
+      "button-save-text": "Save the new name of the passkey.",
+      "button-cancel-title": "Cancel",
+      "button-cancel-text": "Cancel the renaming of the passkey.",
+      "button-delete-title": "Delete",
+      "button-delete-text": "Delete the passkey. You will not be able to log in with this passkey anymore.",
+      "button-register-title": "Register Passkey",
+      "button-register-text": "Register a new Passkey to secure your account."
     }
   },
   "audit": {
@@ -204,6 +235,25 @@
       "severity": "Severity",
       "origin": "Origin",
       "message": "Message"
+    }
+  },
+  "keygen": {
+    "headline": "WireGuard Key Generator",
+    "abstract": "Generate a new WireGuard keys. The keys are generated in your local browser and are never sent to the server.",
+    "headline-keypair": "New Key Pair",
+    "headline-preshared-key": "New Preshared Key",
+    "button-generate": "Generate",
+    "private-key": {
+        "label": "Private Key",
+        "placeholder": "The private key"
+    },
+    "public-key": {
+        "label": "Public Key",
+        "placeholder": "The public key"
+    },
+    "preshared-key": {
+        "label": "Preshared Key",
+        "placeholder": "The pre-shared key"
     }
   },
   "modals": {
@@ -246,7 +296,8 @@
       "password": {
         "label": "Password",
         "placeholder": "A super secret password",
-        "description": "Leave this field blank to keep current password."
+        "description": "Leave this field blank to keep current password.",
+        "too-weak": "The password is too weak. Please use a stronger password."
       },
       "email": {
         "label": "Email",
@@ -439,7 +490,8 @@
       },
       "private-key": {
         "label": "Private Key",
-        "placeholder": "The private key"
+        "placeholder": "The private key",
+        "help": "The private key is stored securely on the server. If the user already holds a copy, you may omit this field. The server still functions exclusively with the peer’s public key."
       },
       "public-key": {
         "label": "Public Key",
