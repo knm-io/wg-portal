@@ -16,6 +16,7 @@ core:
   admin_user: admin@wgportal.local
   admin_password: wgportal-default
   admin_api_token: ""
+  disable_admin_user: false
   editable_keys: true
   create_default_peer: false
   create_default_peer_on_creation: false
@@ -131,6 +132,10 @@ More advanced options are found in the subsequent `Advanced` section.
 - **Description:** The administrator password. The default password should be changed immediately!
 - **Important:** The password should be strong and secure. The minimum password length is specified in [auth.min_password_length](#min_password_length). By default, it is 16 characters.
 
+### `disable_admin_user`
+- **Default:** `false`
+- **Description:** If `true`, no admin user is created. This is useful if you plan to manage users exclusively through external authentication providers such as LDAP or OAuth.
+
 ### `admin_api_token`
 - **Default:** *(empty)*
 - **Description:** An API token for the admin user. If a token is provided, the REST API can be accessed using this token. If empty, the API is initially disabled for the admin user.
@@ -179,6 +184,11 @@ The current MikroTik backend is in **BETA** and may not support all features.
 - **Description:** The default backend to use for managing WireGuard interfaces. 
   Valid options are: `local`, or other backend id's configured in the `mikrotik` section.
 
+### `ignored_local_interfaces`
+- **Default:** *(empty)*
+- **Description:** A list of interface names to exclude when enumerating local interfaces.
+  This is useful if you want to prevent certain interfaces from being imported from the local system.
+
 ### Mikrotik
 
 The `mikrotik` array contains a list of MikroTik backend definitions. Each entry describes how to connect to a MikroTik RouterOS instance that hosts WireGuard interfaces.
@@ -219,6 +229,11 @@ Below are the properties for each entry inside `backend.mikrotik`:
 #### `concurrency`
 - **Default:** `5`
 - **Description:** Maximum number of concurrent API requests the backend will issue when enumerating interfaces and their details. If `0` or negative, a sane default of `5` is used.
+
+#### `ignored_interfaces`
+- **Default:** *(empty)*
+- **Description:** A list of interface names to exclude during interface enumeration.
+  This is useful if you want to prevent specific interfaces from being imported from the MikroTik device.
 
 #### `debug`
 - **Default:** `false`

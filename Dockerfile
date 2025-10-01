@@ -20,7 +20,7 @@ RUN npm run build
 ######
 # Build backend
 ######
-FROM --platform=${BUILDPLATFORM} golang:1.24-alpine AS builder
+FROM --platform=${BUILDPLATFORM} golang:1.25-alpine AS builder
 # Set the working directory
 WORKDIR /build
 # Download dependencies
@@ -52,7 +52,7 @@ COPY --from=builder /build/dist/wg-portal /
 ######
 FROM alpine:3.22
 # Install OS-level dependencies
-RUN apk add --no-cache bash curl iptables nftables openresolv wireguard-tools
+RUN apk add --no-cache bash curl iptables nftables openresolv wireguard-tools tzdata
 # Setup timezone
 ENV TZ=UTC
 # Copy binaries
