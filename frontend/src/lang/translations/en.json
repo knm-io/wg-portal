@@ -42,7 +42,8 @@
     "audit": "Audit Log",
     "login": "Login",
     "logout": "Logout",
-    "keygen": "Key Generator"
+    "keygen": "Key Generator",
+    "calculator": "IP Calculator"
   },
   "home": {
     "headline": "WireGuard® VPN Portal",
@@ -117,6 +118,7 @@
       "dns": "DNS Servers",
       "mtu": "MTU",
       "default-keep-alive": "Default Keepalive Interval",
+      "default-dns": "Default DNS Servers",
       "button-show-config": "Show configuration",
       "button-download-config": "Download configuration",
       "button-store-config": "Store configuration for wg-quick",
@@ -220,6 +222,16 @@
       "button-delete-text": "Delete the passkey. You will not be able to log in with this passkey anymore.",
       "button-register-title": "Register Passkey",
       "button-register-text": "Register a new Passkey to secure your account."
+    },
+    "password": {
+      "headline": "Password Settings",
+      "abstract": "Here you can change your password.",
+      "current-label": "Current Password",
+      "new-label": "New Password",
+      "new-confirm-label": "Confirm New Password",
+      "change-button-text": "Change Password",
+      "invalid-confirm-label": "Passwords do not match",
+      "weak-label": "Password is too weak"
     }
   },
   "audit": {
@@ -256,6 +268,26 @@
     "preshared-key": {
         "label": "Preshared Key",
         "placeholder": "The pre-shared key"
+    }
+  },
+  "calculator": {
+    "headline": "WireGuard IP Calculator",
+    "abstract": "Generate a WireGuard Allowed IPs. The IP subnets are generated in your local browser and are never sent to the server.",
+    "headline-allowed-ip": "New Allowed IPs",
+    "button-exclude-private": "Exclude Private IP Ranges",
+    "allowed-ip": {
+        "label": "Allowed IPs",
+        "placeholder": "0.0.0.0/0, ::/0",
+        "empty": "Value cannot be empty"
+    },
+    "dissallowed-ip": {
+        "label": "Disallowed IPs",
+        "placeholder": "10.0.0.0/8, 192.168.0.0/16",
+        "invalid": "Invalid address: {addr}"
+    },
+    "new-allowed-ip": {
+        "label": "Allowed IPs",
+        "placeholder": ""
     }
   },
   "modals": {
@@ -462,6 +494,8 @@
       "section-config": "Configuration",
       "identifier": "Identifier",
       "ip": "IP Addresses",
+      "allowed-ip": "Allowed IP Addresses",
+      "extra-allowed-ip": "Server Side Allowed IP Addresses",
       "user": "Associated User",
       "notes": "Notes",
       "expiry-status": "Expires At",
@@ -474,6 +508,8 @@
       "handshake": "Last Handshake",
       "connected-since": "Connected since",
       "endpoint": "Endpoint",
+      "endpoint-key": "Endpoint Public Key",
+      "keepalive": "Persistent Keepalive",
       "button-download": "Download configuration",
       "button-email": "Send configuration via E-Mail",
       "style-label": "Configuration Style"

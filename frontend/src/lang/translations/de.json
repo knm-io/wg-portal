@@ -42,7 +42,8 @@
     "audit": "Event Protokoll",
     "login": "Anmelden",
     "logout": "Abmelden",
-    "keygen": "Schlüsselgenerator"
+    "keygen": "Schlüsselgenerator",
+    "calculator": "IP-Rechner"
   },
   "home": {
     "headline": "WireGuard® VPN Portal",
@@ -117,6 +118,7 @@
       "dns": "DNS-Server",
       "mtu": "MTU",
       "default-keep-alive": "Standard Keepalive-Intervall",
+      "default-dns": "Standard DNS-Server",
       "button-show-config": "Konfiguration anzeigen",
       "button-download-config": "Konfiguration herunterladen",
       "button-store-config": "Konfiguration für wg-quick speichern",
@@ -220,6 +222,16 @@
       "button-delete-text": "Passkey löschen. Sie können sich anschließend nicht mehr mit diesem Passkey anmelden.",
       "button-register-title": "Passkey registrieren",
       "button-register-text": "Einen neuen Passkey registrieren, um Ihr Konto zu sichern."
+    },
+    "password": {
+      "headline": "Passwort-Einstellungen",
+      "abstract": "Hier können Sie Ihr Passwort ändern.",
+      "current-label": "Aktuelles Passwort",
+      "new-label": "Neues Passwort",
+      "new-confirm-label": "Neues Passwort bestätigen",
+      "change-button-text": "Passwort ändern",
+      "invalid-confirm-label": "Passwörter stimmen nicht überein",
+      "weak-label": "Passwort ist zu schwach"
     }
   },
   "audit": {
@@ -256,6 +268,26 @@
     "preshared-key": {
       "label": "Pre-Shared Key",
       "placeholder": "Der geteilte Schlüssel"
+    }
+  },
+  "calculator": {
+    "headline": "WireGuard IP-Rechner",
+    "abstract": "Erzeuge erlaubte IPs für WireGuard. Die IP-Subnetze werden lokal in Ihrem Browser generiert und niemals an den Server gesendet.",
+    "headline-allowed-ip": "Neue erlaubte IPs",
+    "button-exclude-private": "Private IP-Bereiche ausschließen",
+    "allowed-ip": {
+      "label": "Erlaubte IPs",
+      "placeholder": "0.0.0.0/0, ::/0",
+      "empty": "Wert darf nicht leer sein"
+    },
+    "dissallowed-ip": {
+      "label": "Nicht erlaubte IPs",
+      "placeholder": "10.0.0.0/8, 192.168.0.0/16",
+      "invalid": "Ungültige Adresse: {addr}"
+    },
+    "new-allowed-ip": {
+      "label": "Erlaubte IPs",
+      "placeholder": ""
     }
   },
   "modals": {
@@ -461,6 +493,8 @@
       "section-config": "Konfiguration",
       "identifier": "Kennung",
       "ip": "IP-Adressen",
+      "allowed-ip": "Erlaubte IP-Adressen",
+      "extra-allowed-ip": "Serverseitig erlaubte IP-Adressen",
       "user": "Zugeordneter Benutzer",
       "notes": "Notizen",
       "expiry-status": "Läuft ab am",
@@ -473,6 +507,8 @@
       "handshake": "Letzter Handshake",
       "connected-since": "Verbunden seit",
       "endpoint": "Endpunkt",
+      "endpoint-key": "Öffentlicher Endpunkt-Schlüssel",
+      "keepalive": "Persistentes Keepalive",
       "button-download": "Konfiguration herunterladen",
       "button-email": "Konfiguration per E-Mail senden",
       "style-label": "Konfigurationsformat"
